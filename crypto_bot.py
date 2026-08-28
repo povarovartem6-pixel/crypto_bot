@@ -28,13 +28,13 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Константы
-BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8588787774:AAHLkHR4BXSPFQLjVSqOLar6SdloT2ORbro")
-OWNER_ID = int(os.getenv("OWNER_ID", "8361478292"))
+BOT_TOKEN = "8588787774:AAHLkHR4BXSPFQLjVSqOLar6SdloT2ORbro"
+OWNER_ID = 8361478292
 BINANCE_API = "https://api.binance.com/api/v3"
 COINGECKO_API = "https://api.coingecko.com/api/v3"
 FEAR_GREED_API = "https://api.alternative.me/fng/"
 
-# Список криптовалют
+# Список криптовалют (сокращенный для скорости)
 CRYPTOCURRENCIES = {
     # Топ-20
     "BTC": "Bitcoin", "ETH": "Ethereum", "BNB": "BNB", "SOL": "Solana",
@@ -119,16 +119,6 @@ class Database:
                 )
             ''')
             
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS stats (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    total_predictions INTEGER DEFAULT 0,
-                    correct_predictions INTEGER DEFAULT 0,
-                    avg_confidence REAL DEFAULT 0,
-                    updated_at TIMESTAMP
-                )
-            ''')
-            
             conn.commit()
     
     def save_prediction(self, prediction: Prediction):
@@ -152,27 +142,6 @@ class Database:
                 prediction.market_score
             ))
             conn.commit()
-    
-    def update_prediction_result(self, prediction_id: int, actual_price: float):
-        """Обновление результата прогноза"""
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                SELECT predicted_price, direction FROM predictions WHERE id = ?
-            ''', (prediction_id,))
-            result = cursor.fetchone()
-            
-            if result:
-                predicted_price, direction = result
-                is_correct = (actual_price > predicted_price and direction == "up") or \
-                           (actual_price < predicted_price and direction == "down")
-                
-                cursor.execute('''
-                    UPDATE predictions 
-                    SET actual_price = ?, resolved_at = ?, is_correct = ?
-                    WHERE id = ?
-                ''', (actual_price, datetime.now().isoformat(), is_correct, prediction_id))
-                conn.commit()
     
     def get_stats(self) -> Dict:
         """Получение статистики"""
@@ -200,6 +169,7 @@ class CryptoAnalyzer:
         self.session: Optional[aiohttp.ClientSession] = None
         self.fear_greed_index = 50
         self.btc_dominance = 50
+        self.analysis_cache = {}
     
     async def init_session(self):
         """Инициализация HTTP сессии"""
@@ -217,11 +187,13 @@ class CryptoAnalyzer:
         await self.init_session()
         
         try:
+            # Получение Fear & Greed Index
             async with self.session.get(FEAR_GREED_API) as response:
                 if response.status == 200:
                     data = await response.json()
                     self.fear_greed_index = int(data['data'][0]['value'])
             
+            # Получение доминации BTC
             async with self.session.get(f"{COINGECKO_API}/global") as response:
                 if response.status == 200:
                     data = await response.json()
@@ -235,14 +207,15 @@ class CryptoAnalyzer:
             logger.error(f"Error getting market data: {e}")
             return {"fear_greed": 50, "btc_dominance": 50}
     
-    async def get_ohlcv(self, symbol: str, interval: str = "1h", limit: int = 200) -> List:
+    async def get_ohlcv(self, symbol: str, interval: str = "1h", limit: int = 100) -> List:
         """Получение свечных данных с Binance"""
         await self.init_session()
         
         try:
             async with self.session.get(
                 f"{BINANCE_API}/klines",
-                params={"symbol": f"{symbol}USDT", "interval": interval, "limit": limit}
+                params={"symbol": f"{symbol}USDT", "interval": interval, "limit": limit},
+                timeout=10
             ) as response:
                 if response.status == 200:
                     return await response.json()
@@ -258,7 +231,8 @@ class CryptoAnalyzer:
         try:
             async with self.session.get(
                 f"{BINANCE_API}/ticker/24hr",
-                params={"symbol": f"{symbol}USDT"}
+                params={"symbol": f"{symbol}USDT"},
+                timeout=10
             ) as response:
                 if response.status == 200:
                     return await response.json()
@@ -340,92 +314,92 @@ class CryptoAnalyzer:
     async def analyze_crypto(self, symbol: str) -> Optional[Prediction]:
         """Комплексный анализ криптовалюты"""
         try:
+            # Получение данных
             ohlcv = await self.get_ohlcv(symbol)
             ticker = await self.get_24h_ticker(symbol)
             
             if not ohlcv or not ticker:
                 return None
             
+            # Извлечение цен
             prices = [float(candle[4]) for candle in ohlcv]
             volumes = [float(candle[5]) for candle in ohlcv]
             
             current_price = float(ticker['lastPrice'])
             volume_24h = float(ticker['quoteVolume'])
             
-            if volume_24h < 10_000_000:
+            # Проверка ликвидности (снижен порог для большего количества сигналов)
+            if volume_24h < 1_000_000:  # Минимальный объем $1M
                 return None
             
+            # Технический анализ
             rsi = self.calculate_rsi(prices)
             macd, signal, histogram = self.calculate_macd(prices)
             upper_bb, middle_bb, lower_bb = self.calculate_bollinger_bands(prices)
             
+            # EMA
             ema_20 = self.calculate_ema(prices, 20)[-1]
             ema_50 = self.calculate_ema(prices, 50)[-1]
-            ema_200 = self.calculate_ema(prices, 200)[-1] if len(prices) >= 200 else current_price
             
+            # Технический скоринг
             technical_score = 0
             
-            if rsi < 30:
-                technical_score += 30
-            elif rsi > 70:
-                technical_score -= 30
-            elif 40 <= rsi <= 60:
-                technical_score += 10
-            
-            if macd > signal and histogram > 0:
+            # RSI анализ (более агрессивный)
+            if rsi < 35:
                 technical_score += 25
-            elif macd < signal and histogram < 0:
+            elif rsi > 65:
                 technical_score -= 25
             
-            if ema_20 > ema_50 and current_price > ema_20:
+            # MACD анализ
+            if macd > signal:
                 technical_score += 20
-            elif ema_20 < ema_50 and current_price < ema_20:
+            elif macd < signal:
                 technical_score -= 20
             
-            if current_price < lower_bb:
+            # EMA анализ
+            if ema_20 > ema_50:
                 technical_score += 15
-            elif current_price > upper_bb:
+            elif ema_20 < ema_50:
                 technical_score -= 15
             
-            onchain_score = 0
+            # Bollinger Bands
+            if current_price < lower_bb:
+                technical_score += 10
+            elif current_price > upper_bb:
+                technical_score -= 10
+            
+            # Объемный анализ
             avg_volume = sum(volumes[-20:]) / 20 if len(volumes) >= 20 else sum(volumes) / len(volumes)
             volume_change = (volumes[-1] - avg_volume) / avg_volume * 100 if avg_volume > 0 else 0
             
-            if volume_change > 20:
-                onchain_score += 20
-            elif volume_change < -20:
-                onchain_score -= 20
+            if volume_change > 30:
+                technical_score += 15
+            elif volume_change < -30:
+                technical_score -= 15
             
+            # Рыночный анализ
             market_score = 0
             
-            if self.fear_greed_index < 25:
-                market_score += 15
-            elif self.fear_greed_index > 75:
-                market_score -= 15
-            
-            if symbol == "BTC" and self.btc_dominance < 40:
+            if self.fear_greed_index < 30:
                 market_score += 10
-            elif symbol != "BTC" and self.btc_dominance > 60:
-                market_score -= 5
+            elif self.fear_greed_index > 70:
+                market_score -= 10
             
-            total_score = technical_score * 0.6 + onchain_score * 0.2 + market_score * 0.2
+            # Общий скоринг
+            total_score = technical_score * 0.8 + market_score * 0.2
             
+            # Определение направления и уверенности
             direction = "up" if total_score > 0 else "down"
-            confidence = min(abs(total_score), 95)
+            confidence = min(abs(total_score) + 50, 90)  # Базовый уровень 50% + скор
             
-            base_change = abs(total_score) / 2
-            volatility_factor = min(volume_change / 100, 2) if volume_change > 0 else 0.5
-            predicted_change = base_change * (1 + volatility_factor)
-            
-            predicted_change = min(max(predicted_change, 2), 15)
+            # Прогнозируемое изменение
+            base_change = abs(total_score) / 3
+            predicted_change = min(max(base_change, 2), 10)
             
             if direction == "down":
                 predicted_change = -predicted_change
             
             predicted_price = current_price * (1 + predicted_change / 100)
-            
-            if confidence < 75 or abs(predicted_change) < 2:
-                return None
             
             prediction = Prediction(
                 symbol=symbol,
@@ -436,7 +410,7 @@ class CryptoAnalyzer:
                 confidence=confidence,
                 direction=direction,
                 technical_score=technical_score,
-                onchain_score=onchain_score,
+                onchain_score=volume_change,
                 market_score=market_score,
                 volume_24h=volume_24h,
                 liquidity_score=min(volume_24h / 100_000_000 * 100, 100)
@@ -452,9 +426,11 @@ class CryptoAnalyzer:
         """Анализ топ криптовалют"""
         predictions = []
         
+        # Получение рыночных данных
         await self.get_market_data()
         
-        symbols_to_analyze = list(CRYPTOCURRENCIES.keys())[:50]
+        # Анализ основных криптовалют
+        symbols_to_analyze = list(CRYPTOCURRENCIES.keys())[:30]  # Анализируем топ-30
         
         tasks = []
         for symbol in symbols_to_analyze:
@@ -467,6 +443,7 @@ class CryptoAnalyzer:
             if isinstance(result, Prediction):
                 predictions.append(result)
         
+        # Сортировка по уверенности
         predictions.sort(key=lambda x: x.confidence, reverse=True)
         
         return predictions[:limit]
@@ -477,7 +454,7 @@ class TelegramBot:
         self.analyzer = CryptoAnalyzer()
         self.db = Database()
         self.application = None
-        self.last_predictions: Dict[str, Prediction] = {}
+        self.is_running = True
     
     def is_authorized(self, user_id: int) -> bool:
         """Проверка авторизации"""
@@ -489,36 +466,34 @@ class TelegramBot:
         direction_text = "РОСТ" if prediction.direction == "up" else "ПАДЕНИЕ"
         
         message = f"""
-╔══════════════════════════════╗
-║     🔮 КРИПТО-ПРОГНОЗ 🔮     ║
-╚══════════════════════════════╝
+🔮 ПРОГНОЗ НА 24 ЧАСА
 
 {direction_emoji} {prediction.name} ({prediction.symbol})
 
 📊 Направление: {direction_text}
 💰 Текущая цена: ${prediction.current_price:,.4f}
-🎯 Прогноз через 24ч: ${prediction.predicted_price:,.4f}
+🎯 Прогноз: ${prediction.predicted_price:,.4f}
 📈 Изменение: {prediction.change_percent:+.2f}%
 
 🎯 Уверенность: {prediction.confidence:.1f}%
 
-┌─────────────────────────────┐
-│ 📊 Технический анализ       │
-│ MACD: {'Бычий' if prediction.technical_score > 0 else 'Медвежий'} │
-│ EMA: {'Восходящий' if prediction.technical_score > 20 else 'Нисходящий'} │
-├─────────────────────────────┤
-│ 🔗 Ончейн-метрики           │
-│ Активность: {'Высокая' if prediction.onchain_score > 10 else 'Низкая'} │
-│ Объем 24ч: ${prediction.volume_24h:,.0f} │
-├─────────────────────────────┤
-│ 🌐 Рыночные условия         │
-│ Fear & Greed: {self.analyzer.fear_greed_index}/100 │
-│ BTC Dominance: {self.analyzer.btc_dominance:.1f}% │
-└─────────────────────────────┘
+📊 Объем 24ч: ${prediction.volume_24h:,.0f}
+🌐 Fear & Greed: {self.analyzer.fear_greed_index}/100
 
 ⚠️ Не является финансовой рекомендацией!
 """
         return message
+    
+    async def send_test_message(self):
+        """Отправка тестового сообщения"""
+        try:
+            await self.application.bot.send_message(
+                chat_id=OWNER_ID,
+                text="✅ Бот запущен и готов к работе!\n\n"
+                     "Начинаю анализ рынка..."
+            )
+        except Exception as e:
+            logger.error(f"Error sending test message: {e}")
     
     async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка команды /start"""
@@ -528,13 +503,17 @@ class TelegramBot:
         
         await update.message.reply_text(
             "👋 Добро пожаловать в Crypto Predictor Bot!\n\n"
+            "🔍 Начинаю анализ рынка...\n\n"
             "Доступные команды:\n"
             "/predict <SYMBOL> - Прогноз по конкретной монете\n"
             "/top10 - Топ-10 лучших прогнозов\n"
-            "/auto - Включить/выключить авто-прогнозы\n"
+            "/signals - Получить сигналы\n"
             "/stats - Статистика точности\n"
             "/help - Помощь"
         )
+        
+        # Сразу запускаем анализ
+        await self.send_signals(update)
     
     async def predict_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка команды /predict"""
@@ -558,7 +537,7 @@ class TelegramBot:
         if prediction:
             formatted = self.format_prediction(prediction)
             self.db.save_prediction(prediction)
-            await update.message.reply_text(formatted, parse_mode=ParseMode.HTML)
+            await update.message.reply_text(formatted)
         else:
             await update.message.reply_text(f"❌ Не удалось получить прогноз для {symbol}")
     
@@ -568,33 +547,44 @@ class TelegramBot:
             await update.message.reply_text("⛔️ Доступ запрещен!")
             return
         
-        await update.message.reply_text("🔍 Анализирую рынок...")
-        
-        predictions = await self.analyzer.analyze_top_cryptos(10)
-        
-        if not predictions:
-            await update.message.reply_text("❌ Не удалось получить прогнозы")
-            return
-        
-        message = "🏆 ТОП-10 ПРОГНОЗОВ НА 24 ЧАСА\n\n"
-        
-        for i, pred in enumerate(predictions, 1):
-            emoji = "📈" if pred.direction == "up" else "📉"
-            message += f"{i}. {emoji} {pred.name} ({pred.symbol})\n"
-            message += f"   Изменение: {pred.change_percent:+.2f}% | Уверенность: {pred.confidence:.1f}%\n\n"
-        
-        await update.message.reply_text(message)
+        await self.send_signals(update)
     
-    async def auto_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработка команды /auto"""
+    async def signals_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработка команды /signals"""
         if not self.is_authorized(update.effective_user.id):
             await update.message.reply_text("⛔️ Доступ запрещен!")
             return
         
-        await update.message.reply_text(
-            "🔄 Авто-прогнозы настроены на каждые 4 часа.\n"
-            "Для отключения используйте /auto off"
-        )
+        await self.send_signals(update)
+    
+    async def send_signals(self, update: Update = None):
+        """Отправка сигналов"""
+        try:
+            await update.message.reply_text("🔍 Анализирую рынок... Это может занять несколько секунд.")
+            
+            predictions = await self.analyzer.analyze_top_cryptos(10)
+            
+            if not predictions:
+                await update.message.reply_text("❌ Не удалось получить прогнозы")
+                return
+            
+            message = "🏆 ТОП-10 ПРОГНОЗОВ НА 24 ЧАСА\n\n"
+            
+            for i, pred in enumerate(predictions, 1):
+                emoji = "📈" if pred.direction == "up" else "📉"
+                message += f"{i}. {emoji} {pred.name} ({pred.symbol})\n"
+                message += f"   Цена: ${pred.current_price:,.4f}\n"
+                message += f"   Изменение: {pred.change_percent:+.2f}%\n"
+                message += f"   Уверенность: {pred.confidence:.1f}%\n\n"
+                
+                # Сохраняем прогноз
+                self.db.save_prediction(pred)
+            
+            await update.message.reply_text(message)
+            
+        except Exception as e:
+            logger.error(f"Error sending signals: {e}")
+            await update.message.reply_text(f"❌ Ошибка: {str(e)}")
     
     async def stats_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка команды /stats"""
@@ -624,32 +614,34 @@ class TelegramBot:
 🤖 CRYPTO PREDICTOR BOT
 
 📋 Команды:
+/start - Запустить бота
 /predict <SYMBOL> - Прогноз по конкретной монете
 /top10 - Топ-10 лучших прогнозов
-/auto - Авто-прогнозы
+/signals - Получить сигналы
 /stats - Статистика точности
 /help - Это сообщение
 
-🎯 Фильтры прогнозов:
-• Уверенность: ≥ 75%
-• Движение: ≥ 2%
-• Объем: > $10M
-
 📊 Анализируемые данные:
 • Технический анализ (RSI, MACD, EMA)
-• Ончейн-метрики
+• Объемы торгов
 • Рыночные индикаторы
 • Fear & Greed Index
-• Доминация BTC
 
 ⚠️ Бот не предоставляет финансовые рекомендации!
 """
         await update.message.reply_text(help_text)
     
     async def run_auto_predictions(self):
-        """Автоматические прогнозы"""
-        while True:
+        """Автоматические прогнозы каждые 4 часа"""
+        logger.info("Starting auto predictions...")
+        
+        # Ждем 10 секунд после запуска
+        await asyncio.sleep(10)
+        
+        while self.is_running:
             try:
+                logger.info("Running auto predictions...")
+                
                 predictions = await self.analyzer.analyze_top_cryptos(5)
                 
                 if predictions and self.application:
@@ -659,14 +651,18 @@ class TelegramBot:
                         emoji = "📈" if pred.direction == "up" else "📉"
                         message += f"{emoji} {pred.name}: {pred.change_percent:+.2f}% "
                         message += f"(уверенность: {pred.confidence:.1f}%)\n"
+                        message += f"Цена: ${pred.current_price:,.4f}\n\n"
                         
+                        # Сохраняем прогноз
                         self.db.save_prediction(pred)
                     
                     await self.application.bot.send_message(
                         chat_id=OWNER_ID,
                         text=message
                     )
+                    logger.info("Auto predictions sent!")
                 
+                # Ждем 4 часа
                 await asyncio.sleep(4 * 60 * 60)
                 
             except Exception as e:
@@ -675,26 +671,36 @@ class TelegramBot:
     
     async def run(self):
         """Запуск бота"""
+        # Инициализация приложения
         self.application = Application.builder().token(self.token).build()
         
+        # Регистрация обработчиков
         self.application.add_handler(CommandHandler("start", self.start_command))
         self.application.add_handler(CommandHandler("predict", self.predict_command))
         self.application.add_handler(CommandHandler("top10", self.top10_command))
-        self.application.add_handler(CommandHandler("auto", self.auto_command))
+        self.application.add_handler(CommandHandler("signals", self.signals_command))
         self.application.add_handler(CommandHandler("stats", self.stats_command))
         self.application.add_handler(CommandHandler("help", self.help_command))
         
-        asyncio.create_task(self.run_auto_predictions())
-        
-        logger.info("Bot started!")
-        
+        # Запуск бота
         await self.application.initialize()
         await self.application.start()
         await self.application.updater.start_polling()
         
+        logger.info("Bot started!")
+        
+        # Отправка тестового сообщения
+        await self.send_test_message()
+        
+        # Запуск авто-прогнозов
+        asyncio.create_task(self.run_auto_predictions())
+        
         try:
-            await asyncio.Event().wait()
+            # Держим бота запущенным
+            while True:
+                await asyncio.sleep(1)
         finally:
+            self.is_running = False
             await self.analyzer.close_session()
             await self.application.stop()
 
