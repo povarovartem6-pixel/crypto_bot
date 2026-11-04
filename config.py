@@ -5,11 +5,10 @@ load_dotenv()
 
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 CRYPTOBOT_API_TOKEN = os.getenv('CRYPTOBOT_API_TOKEN')
-# Важно: здесь мы ищем ADMIN_IDS (с буквой S)
 ADMIN_IDS = [int(x) for x in os.getenv('ADMIN_IDS', '').split(',') if x.strip()]
 
 SUPPORT_LINK = "https://t.me/shipersupportbot"
-CHAT_LINK = "https://t.me/your_chat" 
+CHAT_LINK = "https://t.me/your_chat"  # Ссылка на чат (пока не используется)
 
 TARIFFS = {
     'free':  {'name': 'Free',  'price': 0,  'coins_limit': 2,   'timeframes': ['15м', '1ч'], 'signals_per_day': 3},
