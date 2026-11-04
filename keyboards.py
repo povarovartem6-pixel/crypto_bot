@@ -1,15 +1,37 @@
 from telegram import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
-from config import ADMIN_IDS
+from config import ADMIN_IDS, LESSONS
 
 def get_reply_main_menu(user_id=None):
     kb = [
         [KeyboardButton("📊 Сигналы"), KeyboardButton("💼 Мой профит")],
         [KeyboardButton("🎓 Обучение"), KeyboardButton("💎 Тарифы")],
-        [KeyboardButton("👤 Профиль"), KeyboardButton("⚙️ Настройки")],
+        [KeyboardButton("👤 Профиль"), KeyboardButton("💬 Чат трейдеров")],
+        [KeyboardButton("🆘 Поддержка")],
     ]
     if user_id in ADMIN_IDS:
         kb.append([KeyboardButton("👑 Админ-панель")])
     return ReplyKeyboardMarkup(kb, resize_keyboard=True, is_persistent=True)
+
+def get_profile_kb():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🏦 Сменить биржу", callback_data='change_exch')],
+        [InlineKeyboardButton("📜 История сделок", callback_data='trade_history')]
+    ])
+
+def get_trial_kb():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🎁 Активировать пробный PRO (3 дня)", callback_data='activate_trial')]
+    ])
+
+def get_lessons_kb(user_lessons_done: list):
+    kb = []
+    for key, lesson in LESSONS.items():
+        status = "✅ " if key in user_lessons_done else ""
+        kb.append([InlineKeyboardButton(f"{status}{lesson['title']}", callback_data=f'lesson_{key}')])
+    return InlineKeyboardMarkup(kb)
+
+def get_lesson_back_kb():
+    return InlineKeyboardMarkup([[InlineKeyboardButton("🔙 К списку уроков", callback_data='lessons_menu')]])
 
 def get_onboarding_kb():
     return InlineKeyboardMarkup([[InlineKeyboardButton("✅ Я ознакомился", callback_data='onboard_read')]])
@@ -35,15 +57,8 @@ def get_signal_actions_kb(signal_id, coin, exchange_name='binance'):
     }
     url = urls.get(exchange_name, urls['binance'])
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ Взять в работу", callback_data=f'confirm_take_{signal_id}'), InlineKeyboardButton("❌ Пропустить", callback_data=f'skip_{signal_id}')],
-        [InlineKeyboardButton("💰 Указать свою сумму", callback_data=f'custom_size_{signal_id}')],
+        [InlineKeyboardButton("✅ Взять в работу", callback_data=f'take_{signal_id}'), InlineKeyboardButton("❌ Пропустить", callback_data=f'skip_{signal_id}')],
         [InlineKeyboardButton(f"📈 Открыть на {exchange_name.capitalize()}", url=url)]
-    ])
-
-def get_confirm_take_kb(signal_id):
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔥 Да, открыть сделку", callback_data=f'take_{signal_id}')],
-        [InlineKeyboardButton("🔙 Нет, отмена", callback_data=f'cancel_take_{signal_id}')]
     ])
 
 def payment_kb(pay_url, invoice_id):
@@ -54,6 +69,5 @@ def payment_kb(pay_url, invoice_id):
 
 def tariffs_kb():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🆓 Free", callback_data='tariff_free')],
         [InlineKeyboardButton("🔥 PRO - $30/мес", callback_data='tariff_pro')],
     ])
