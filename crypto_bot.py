@@ -1,702 +1,253 @@
-import os
-import asyncio
-import logging
+import asyncio, logging, json
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple
-import json
-import sqlite3
-from dataclasses import dataclass
-from enum import Enum
+from telegram import Update
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
-import aiohttp
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    ContextTypes,
-    CallbackQueryHandler,
-    MessageHandler,
-    filters,
+from config import *
+from database import Database, get_conn
+from signals import SignalGenerator
+from keyboards import (
+    get_reply_main_menu, get_onboarding_kb, get_legal_kb, get_exchange_kb,
+    get_signal_actions_kb, get_confirm_take_kb, payment_kb, tariffs_kb
 )
-from telegram.constants import ParseMode
+from tracker import TradeTracker, PaperTrader
+from chart_generator import generate_signal_chart
+from payments import CryptoBotPayment
 
-# Настройка логирования
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
-logger = logging.getLogger(__name__)
+logging.basicConfig(format='%(asctime)s %(levelname)s %(message)s', level=logging.INFO)
+db = Database()
+sig_gen = SignalGenerator(db)
+tracker = TradeTracker(db)
+paper = PaperTrader(db)
+payment = CryptoBotPayment()
 
-# Константы
-BOT_TOKEN = "8588787774:AAHLkHR4BXSPFQLjVSqOLar6SdloT2ORbro"
-OWNER_ID = 8361478292
-BINANCE_API = "https://api.binance.com/api/v3"
-COINGECKO_API = "https://api.coingecko.com/api/v3"
-FEAR_GREED_API = "https://api.alternative.me/fng/"
 
-# Список криптовалют
-CRYPTOCURRENCIES = {
-    # Топ-20
-    "BTC": "Bitcoin", "ETH": "Ethereum", "BNB": "BNB", "SOL": "Solana",
-    "XRP": "XRP", "ADA": "Cardano", "DOGE": "Dogecoin", "AVAX": "Avalanche",
-    "DOT": "Polkadot", "LINK": "Chainlink", "MATIC": "Polygon", "UNI": "Uniswap",
-    "ATOM": "Cosmos", "LTC": "Litecoin", "BCH": "Bitcoin Cash", "NEAR": "NEAR Protocol",
-    "ALGO": "Algorand", "VET": "VeChain", "ICP": "Internet Computer", "FIL": "Filecoin",
-    # DeFi
-    "AAVE": "Aave", "COMP": "Compound", "MKR": "Maker", "SNX": "Synthetix",
-    "CRV": "Curve DAO", "SUSHI": "SushiSwap", "CAKE": "PancakeSwap", "1INCH": "1inch",
-    "BAL": "Balancer", "YFI": "yearn.finance", "LDO": "Lido DAO", "RPL": "Rocket Pool",
-    "GMX": "GMX", "DYDX": "dYdX", "PERP": "Perpetual Protocol", "GNS": "Gains Network",
-    # Layer 1/2
-    "APT": "Aptos", "ARB": "Arbitrum", "OP": "Optimism", "SUI": "Sui",
-    "SEI": "Sei", "TIA": "Celestia", "INJ": "Injective", "TON": "Toncoin",
-    "TRX": "TRON", "EGLD": "MultiversX", "HBAR": "Hedera", "FTM": "Fantom",
-    "MINA": "Mina Protocol", "KAS": "Kaspa", "IMX": "Immutable X",
-    # Meme
-    "SHIB": "Shiba Inu", "PEPE": "Pepe", "FLOKI": "Floki", "BONK": "Bonk",
-    "WIF": "dogwifhat", "MEME": "Memecoin", "TURBO": "Turbo", "BRETT": "Brett",
-    # AI/Data
-    "GRT": "The Graph", "OCEAN": "Ocean Protocol", "FET": "Fetch.ai", "AGIX": "SingularityNET",
-    "RNDR": "Render Token", "THETA": "Theta Network", "AR": "Arweave", "TAO": "Bittensor",
-    # Gaming
-    "SAND": "The Sandbox", "MANA": "Decentraland", "AXS": "Axie Infinity", "GALA": "Gala",
-    "ENJ": "Enjin Coin", "ILV": "Illuvium", "MAGIC": "Magic", "RON": "Ronin",
-    # Exchange
-    "OKB": "OKB", "KCS": "KuCoin Token", "HT": "Huobi Token", "GT": "GateToken",
-    "CRO": "Cronos", "LEO": "UNUS SED LEO", "BGB": "Bitget Token",
-    # Infrastructure
-    "BAND": "Band Protocol", "API3": "API3", "TRB": "Tellor", "PYTH": "Pyth Network",
-    "ROSE": "Oasis Network", "AKT": "Akash Network",
-    # Privacy
-    "XMR": "Monero", "ZEC": "Zcash", "DASH": "Dash", "SCRT": "Secret",
-    # Другие
-    "XTZ": "Tezos", "EOS": "EOS", "IOTA": "IOTA", "NEO": "Neo",
-    "QTUM": "Qtum", "ZIL": "Zilliqa", "KAVA": "Kava", "WAVES": "Waves",
-    "CELO": "Celo", "SKL": "SKALE"
-}
+# === СТАРТ ===
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    u = update.effective_user
+    db.add_user(u.id, u.username or '', u.first_name or '', u.last_name or '')
+    user = db.get_user(u.id)
 
-@dataclass
-class TradeSignal:
-    symbol: str
-    name: str
-    signal_type: str  # "LONG" or "SHORT"
-    entry_price: float
-    stop_loss: float
-    take_profit: float
-    confidence: float
-    risk_reward_ratio: float
-    timeframe: str = "24h"
-    technical_score: float = 0
-    volume_24h: float = 0
-    potential_profit: float = 0
+    # Онбординг
+    if not context.user_data.get('onboard_done'):
+        instruction = f"""
+👋 <b>Добро пожаловать в ShiperSignal, {u.first_name}!</b>
 
-class Database:
-    def __init__(self, db_path: str = "crypto_signals.db"):
-        self.db_path = db_path
-        self.init_db()
-    
-    def init_db(self):
-        """Инициализация базы данных"""
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.cursor()
-            
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS signals (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    symbol TEXT NOT NULL,
-                    signal_type TEXT NOT NULL,
-                    entry_price REAL NOT NULL,
-                    stop_loss REAL NOT NULL,
-                    take_profit REAL NOT NULL,
-                    confidence REAL NOT NULL,
-                    created_at TIMESTAMP NOT NULL,
-                    is_successful BOOLEAN
-                )
-            ''')
-            
-            conn.commit()
-    
-    def save_signal(self, signal: TradeSignal):
-        """Сохранение сигнала"""
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                INSERT INTO signals 
-                (symbol, signal_type, entry_price, stop_loss, take_profit, confidence, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            ''', (
-                signal.symbol,
-                signal.signal_type,
-                signal.entry_price,
-                signal.stop_loss,
-                signal.take_profit,
-                signal.confidence,
-                datetime.now().isoformat()
-            ))
-            conn.commit()
-    
-    def get_stats(self) -> Dict:
-        """Получение статистики"""
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                SELECT 
-                    COUNT(*) as total,
-                    SUM(CASE WHEN signal_type = 'LONG' THEN 1 ELSE 0 END) as longs,
-                    SUM(CASE WHEN signal_type = 'SHORT' THEN 1 ELSE 0 END) as shorts,
-                    AVG(confidence) as avg_conf
-                FROM signals
-            ''')
-            result = cursor.fetchone()
-            
-            return {
-                "total": result[0] or 0,
-                "longs": result[1] or 0,
-                "shorts": result[2] or 0,
-                "avg_confidence": result[3] or 0
-            }
+Перед началом работы, пожалуйста, ознакомьтесь с инструкцией:
 
-class CryptoAnalyzer:
-    def __init__(self):
-        self.session: Optional[aiohttp.ClientSession] = None
-        self.fear_greed_index = 50
-        self.btc_dominance = 50
-    
-    async def init_session(self):
-        """Инициализация HTTP сессии"""
-        if not self.session:
-            self.session = aiohttp.ClientSession()
-    
-    async def close_session(self):
-        """Закрытие HTTP сессии"""
-        if self.session:
-            await self.session.close()
-            self.session = None
-    
-    async def get_market_data(self) -> Dict:
-        """Получение рыночных данных"""
-        await self.init_session()
-        
-        try:
-            async with self.session.get(FEAR_GREED_API, timeout=10) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    self.fear_greed_index = int(data['data'][0]['value'])
-            
-            async with self.session.get(f"{COINGECKO_API}/global", timeout=10) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    self.btc_dominance = data['data']['market_cap_percentage']['btc']
-            
-            return {
-                "fear_greed": self.fear_greed_index,
-                "btc_dominance": self.btc_dominance
-            }
-        except Exception as e:
-            logger.error(f"Error getting market data: {e}")
-            return {"fear_greed": 50, "btc_dominance": 50}
-    
-    async def get_ohlcv(self, symbol: str, interval: str = "1h", limit: int = 100) -> List:
-        """Получение свечных данных"""
-        await self.init_session()
-        
-        try:
-            async with self.session.get(
-                f"{BINANCE_API}/klines",
-                params={"symbol": f"{symbol}USDT", "interval": interval, "limit": limit},
-                timeout=10
-            ) as response:
-                if response.status == 200:
-                    return await response.json()
-        except Exception as e:
-            logger.error(f"Error getting OHLCV for {symbol}: {e}")
-        
-        return []
-    
-    async def get_24h_ticker(self, symbol: str) -> Dict:
-        """Получение 24-часовой статистики"""
-        await self.init_session()
-        
-        try:
-            async with self.session.get(
-                f"{BINANCE_API}/ticker/24hr",
-                params={"symbol": f"{symbol}USDT"},
-                timeout=10
-            ) as response:
-                if response.status == 200:
-                    return await response.json()
-        except Exception as e:
-            logger.error(f"Error getting ticker for {symbol}: {e}")
-        
-        return {}
-    
-    def calculate_rsi(self, prices: List[float], period: int = 14) -> float:
-        """Расчет RSI"""
-        if len(prices) < period + 1:
-            return 50
-        
-        gains = []
-        losses = []
-        
-        for i in range(1, len(prices)):
-            change = prices[i] - prices[i-1]
-            gains.append(max(0, change))
-            losses.append(max(0, -change))
-        
-        avg_gain = sum(gains[:period]) / period
-        avg_loss = sum(losses[:period]) / period
-        
-        for i in range(period, len(gains)):
-            avg_gain = (avg_gain * (period - 1) + gains[i]) / period
-            avg_loss = (avg_loss * (period - 1) + losses[i]) / period
-        
-        if avg_loss == 0:
-            return 100
-        
-        rs = avg_gain / avg_loss
-        rsi = 100 - (100 / (1 + rs))
-        
-        return rsi
-    
-    def calculate_ema(self, prices: List[float], period: int) -> List[float]:
-        """Расчет EMA"""
-        if not prices:
-            return []
-        
-        ema = [prices[0]]
-        multiplier = 2 / (period + 1)
-        
-        for i in range(1, len(prices)):
-            ema.append((prices[i] - ema[-1]) * multiplier + ema[-1])
-        
-        return ema
-    
-    def calculate_macd(self, prices: List[float]) -> Tuple[float, float, float]:
-        """Расчет MACD"""
-        if len(prices) < 26:
-            return 0, 0, 0
-        
-        ema_12 = self.calculate_ema(prices, 12)
-        ema_26 = self.calculate_ema(prices, 26)
-        
-        macd_line = [ema_12[i] - ema_26[i] for i in range(len(prices))]
-        signal_line = self.calculate_ema(macd_line, 9)
-        
-        return macd_line[-1], signal_line[-1], macd_line[-1] - signal_line[-1]
-    
-    def calculate_support_resistance(self, prices: List[float]) -> Tuple[float, float]:
-        """Расчет уровней поддержки и сопротивления"""
-        if not prices:
-            return 0, 0
-        
-        recent_prices = prices[-20:]
-        support = min(recent_prices)
-        resistance = max(recent_prices)
-        
-        return support, resistance
-    
-    async def generate_trade_signal(self, symbol: str) -> Optional[TradeSignal]:
-        """Генерация торгового сигнала"""
-        try:
-            ohlcv = await self.get_ohlcv(symbol)
-            ticker = await self.get_24h_ticker(symbol)
-            
-            if not ohlcv or not ticker:
-                return None
-            
-            prices = [float(candle[4]) for candle in ohlcv]
-            volumes = [float(candle[5]) for candle in ohlcv]
-            
-            current_price = float(ticker['lastPrice'])
-            volume_24h = float(ticker['quoteVolume'])
-            
-            if volume_24h < 1_000_000:
-                return None
-            
-            # Технический анализ
-            rsi = self.calculate_rsi(prices)
-            macd, signal_line, histogram = self.calculate_macd(prices)
-            ema_20 = self.calculate_ema(prices, 20)[-1]
-            ema_50 = self.calculate_ema(prices, 50)[-1]
-            support, resistance = self.calculate_support_resistance(prices)
-            
-            # Определение направления
-            technical_score = 0
-            
-            # RSI анализ
-            if rsi < 30:
-                technical_score += 30  # Перепродан - сигнал на LONG
-            elif rsi > 70:
-                technical_score -= 30  # Перекуплен - сигнал на SHORT
-            
-            # MACD анализ
-            if macd > signal_line and histogram > 0:
-                technical_score += 20
-            elif macd < signal_line and histogram < 0:
-                technical_score -= 20
-            
-            # EMA анализ
-            if ema_20 > ema_50 and current_price > ema_20:
-                technical_score += 15
-            elif ema_20 < ema_50 and current_price < ema_20:
-                technical_score -= 15
-            
-            # Объемный анализ
-            avg_volume = sum(volumes[-20:]) / 20 if len(volumes) >= 20 else sum(volumes) / len(volumes)
-            volume_change = (volumes[-1] - avg_volume) / avg_volume * 100 if avg_volume > 0 else 0
-            
-            if volume_change > 20:
-                technical_score += 10
-            elif volume_change < -20:
-                technical_score -= 10
-            
-            # Рыночный контекст
-            if self.fear_greed_index < 25:
-                technical_score += 10  # Экстремальный страх - хорошее время для LONG
-            elif self.fear_greed_index > 75:
-                technical_score -= 10  # Экстремальная жадность - риск коррекции
-            
-            # Определение типа сигнала
-            if technical_score > 10:
-                signal_type = "LONG"
-                confidence = min(abs(technical_score) + 50, 90)
-            elif technical_score < -10:
-                signal_type = "SHORT"
-                confidence = min(abs(technical_score) + 50, 90)
-            else:
-                return None  # Нет четкого сигнала
-            
-            # Расчет уровней
-            if signal_type == "LONG":
-                entry_price = current_price
-                stop_loss = support * 0.98  # 2% ниже поддержки
-                take_profit = current_price * 1.05  # +5% от текущей цены
-                potential_profit = 5.0
-            else:  # SHORT
-                entry_price = current_price
-                stop_loss = resistance * 1.02  # 2% выше сопротивления
-                take_profit = current_price * 0.95  # -5% от текущей цены
-                potential_profit = 5.0
-            
-            # Расчет Risk/Reward
-            risk = abs(entry_price - stop_loss)
-            reward = abs(take_profit - entry_price)
-            risk_reward_ratio = reward / risk if risk > 0 else 0
-            
-            # Фильтр по Risk/Reward
-            if risk_reward_ratio < 1.5:
-                return None
-            
-            signal = TradeSignal(
-                symbol=symbol,
-                name=CRYPTOCURRENCIES.get(symbol, symbol),
-                signal_type=signal_type,
-                entry_price=entry_price,
-                stop_loss=stop_loss,
-                take_profit=take_profit,
-                confidence=confidence,
-                risk_reward_ratio=risk_reward_ratio,
-                technical_score=technical_score,
-                volume_24h=volume_24h,
-                potential_profit=potential_profit
-            )
-            
-            return signal
-            
-        except Exception as e:
-            logger.error(f"Error generating signal for {symbol}: {e}")
-            return None
-    
-    async def generate_all_signals(self, limit: int = 10) -> List[TradeSignal]:
-        """Генерация всех сигналов"""
-        signals = []
-        
-        await self.get_market_data()
-        
-        symbols_to_analyze = list(CRYPTOCURRENCIES.keys())[:30]
-        
-        tasks = []
-        for symbol in symbols_to_analyze:
-            task = asyncio.create_task(self.generate_trade_signal(symbol))
-            tasks.append(task)
-        
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        for result in results:
-            if isinstance(result, TradeSignal):
-                signals.append(result)
-        
-        # Сортировка по уверенности и Risk/Reward
-        signals.sort(key=lambda x: (x.confidence * x.risk_reward_ratio), reverse=True)
-        
-        return signals[:limit]
+1️⃣ <b>Бот работает на ФЬЮЧЕРСАХ.</b> Плечо подбирается автоматически. Не ставьте больше, чем советует бот - это риск ликвидации.
 
-class TelegramBot:
-    def __init__(self, token: str = BOT_TOKEN):
-        self.token = token
-        self.analyzer = CryptoAnalyzer()
-        self.db = Database()
-        self.application = None
-        self.is_running = True
-    
-    def is_authorized(self, user_id: int) -> bool:
-        """Проверка авторизации"""
-        return user_id == OWNER_ID
-    
-    def format_signal(self, signal: TradeSignal) -> str:
-        """Форматирование торгового сигнала"""
-        if signal.signal_type == "LONG":
-            emoji = "🟢"
-            type_text = "LONG (Покупка)"
-        else:
-            emoji = "🔴"
-            type_text = "SHORT (Продажа)"
-        
-        message = f"""
-{emoji} СИГНАЛ: {type_text}
+2️⃣ <b>Как брать сигнал?</b> Нажмите кнопку <b>✅ «Взять в работу»</b>. Бот будет сопровождать сделку.
 
-💰 {signal.name} ({signal.symbol})
+3️⃣ <b>Риск-менеджмент.</b> Всегда ставьте стоп-лосс и не рискуйте больше 1% от депозита.
 
-━━━━━━━━━━━━━━━━━━━━━━
-📊 Вход: ${signal.entry_price:,.4f}
-🛑 Стоп-лосс: ${signal.stop_loss:,.4f}
-✅ Тейк-профит: ${signal.take_profit:,.4f}
-━━━━━━━━━━━━━━━━━━━━━━
+4️⃣ <b>Бесплатная версия (Free).</b> 3 сигнала в день по BTC и ETH. Для доступа к 80+ монетам оформите PRO.
 
-📈 Потенциальная прибыль: {signal.potential_profit:.1f}%
-⚖️ Risk/Reward: 1:{signal.risk_reward_ratio:.1f}
-🎯 Уверенность: {signal.confidence:.1f}%
-
-💵 Объем 24ч: ${signal.volume_24h:,.0f}
-🌐 Fear & Greed: {self.analyzer.fear_greed_index}/100
-
-⚠️ Всегда используйте стоп-лосс!
+⚠️ <i>Бот не гарантирует прибыль. Это инструмент аналитики.</i>
 """
-        return message
-    
-    async def send_test_message(self):
-        """Отправка тестового сообщения"""
-        try:
-            await self.application.bot.send_message(
-                chat_id=OWNER_ID,
-                text="✅ Бот запущен и готов к работе!\n\n"
-                     "🎯 Отправьте /signals для получения торговых сигналов"
-            )
-        except Exception as e:
-            logger.error(f"Error sending test message: {e}")
-    
-    async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработка команды /start"""
-        if not self.is_authorized(update.effective_user.id):
-            await update.message.reply_text("⛔️ Доступ запрещен!")
+        await update.message.reply_text(instruction, reply_markup=get_onboarding_kb(), parse_mode='HTML')
+        return
+
+    # Баланс
+    if user['balance_usdt'] == 0:
+        context.user_data['awaiting_deposit'] = True
+        await update.message.reply_text("💰 Укажите ваш стартовый виртуальный депозит (например, <code>1000</code>):", parse_mode='HTML')
+        return
+
+    await update.message.reply_text(
+        f"👋 С возвращением, {user['first_name']}!\nВыберите действие 👇",
+        reply_markup=get_reply_main_menu(u.id)
+    )
+
+
+# === СИГНАЛЫ ===
+async def top_signals_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    u = db.get_user(update.effective_user.id)
+
+    if u['tariff'] == 'free':
+        today = datetime.now().date().isoformat()
+        if context.user_data.get('last_signal_date') == today and context.user_data.get('signals_today', 0) >= 3:
+            await update.message.reply_text("🛑 <b>Лимит (3/3) исчерпан.</b>\n\nОформите PRO для доступа к 80+ монетам.", parse_mode='HTML')
             return
-        
-        await update.message.reply_text(
-            "👋 Добро пожаловать в Crypto Signals Bot!\n\n"
-            "🎯 Я предоставляю торговые сигналы:\n"
-            "• LONG (покупка) и SHORT (продажа)\n"
-            "• Уровни входа, стоп-лосса и тейк-профита\n\n"
-            "📋 Команды:\n"
-            "/signals - Получить сигналы\n"
-            "/long - Только LONG сигналы\n"
-            "/short - Только SHORT сигналы\n"
-            "/stats - Статистика\n"
-            "/help - Помощь"
+        context.user_data['last_signal_date'] = today
+        context.user_data['signals_today'] = context.user_data.get('signals_today', 0) + 1
+
+    coins = ['BTC', 'ETH'] if u['tariff'] == 'free' else ALL_COINS[:15]
+    await update.message.reply_text("⏳ Сканирую рынок...")
+
+    sigs = sig_gen.scan(coins, TARIFFS[u['tariff']]['timeframes'][0])
+    if not sigs:
+        await update.message.reply_text("😴 Нет идеальных сетапов. Рынок шумит.")
+        return
+
+    s = sigs[0]
+    text = sig_gen.format(s, user_balance=u.get('balance_usdt', 1000), exchange_name=u.get('exchange', 'binance'))
+    kb = get_signal_actions_kb(s['id'], s['coin'], u.get('exchange', 'binance'))
+
+    try:
+        chart = generate_signal_chart(s['coin'], s['signal_type'], s['entry_price'], s['stop_loss'], s['target_prices'][0])
+    except Exception:
+        chart = None
+
+    if chart:
+        await update.message.reply_photo(photo=chart, caption=text, reply_markup=kb, parse_mode='HTML')
+    else:
+        await update.message.reply_text(text, reply_markup=kb, parse_mode='HTML')
+
+
+# === CALLBACKS ===
+async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    user_id = q.from_user.id
+    u = db.get_user(user_id)
+
+    if q.data == 'onboard_read':
+        await q.edit_message_text(LEGAL_DISCLAIMER, reply_markup=get_legal_kb(), parse_mode='HTML')
+
+    elif q.data == 'legal_accept':
+        context.user_data['onboard_done'] = True
+        await q.edit_message_text(
+            "🏦 <b>Выберите вашу биржу:</b>",
+            reply_markup=get_exchange_kb(),
+            parse_mode='HTML'
         )
-    
-    async def signals_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработка команды /signals"""
-        if not self.is_authorized(update.effective_user.id):
-            await update.message.reply_text("⛔️ Доступ запрещен!")
-            return
-        
-        await update.message.reply_text("🔍 Анализирую рынок...")
-        
-        signals = await self.analyzer.generate_all_signals(10)
-        
-        if not signals:
-            await update.message.reply_text("❌ Нет сигналов в данный момент")
-            return
-        
-        longs = [s for s in signals if s.signal_type == "LONG"]
-        shorts = [s for s in signals if s.signal_type == "SHORT"]
-        
-        message = "🎯 ТОРГОВЫЕ СИГНАЛЫ\n\n"
-        
-        if longs:
-            message += "🟢 LONG СИГНАЛЫ:\n\n"
-            for signal in longs[:5]:
-                message += self.format_signal(signal)
-                self.db.save_signal(signal)
-                message += "\n"
-        
-        if shorts:
-            message += "🔴 SHORT СИГНАЛЫ:\n\n"
-            for signal in shorts[:5]:
-                message += self.format_signal(signal)
-                self.db.save_signal(signal)
-                message += "\n"
-        
-        await update.message.reply_text(message)
-    
-    async def long_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработка команды /long"""
-        if not self.is_authorized(update.effective_user.id):
-            await update.message.reply_text("⛔️ Доступ запрещен!")
-            return
-        
-        await update.message.reply_text("🔍 Ищу LONG сигналы...")
-        
-        signals = await self.analyzer.generate_all_signals(20)
-        longs = [s for s in signals if s.signal_type == "LONG"]
-        
-        if not longs:
-            await update.message.reply_text("❌ Нет LONG сигналов")
-            return
-        
-        message = "🟢 LONG СИГНАЛЫ:\n\n"
-        for signal in longs[:5]:
-            message += self.format_signal(signal)
-            self.db.save_signal(signal)
-            message += "\n"
-        
-        await update.message.reply_text(message)
-    
-    async def short_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработка команды /short"""
-        if not self.is_authorized(update.effective_user.id):
-            await update.message.reply_text("⛔️ Доступ запрещен!")
-            return
-        
-        await update.message.reply_text("🔍 Ищу SHORT сигналы...")
-        
-        signals = await self.analyzer.generate_all_signals(20)
-        shorts = [s for s in signals if s.signal_type == "SHORT"]
-        
-        if not shorts:
-            await update.message.reply_text("❌ Нет SHORT сигналов")
-            return
-        
-        message = "🔴 SHORT СИГНАЛЫ:\n\n"
-        for signal in shorts[:5]:
-            message += self.format_signal(signal)
-            self.db.save_signal(signal)
-            message += "\n"
-        
-        await update.message.reply_text(message)
-    
-    async def stats_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработка команды /stats"""
-        if not self.is_authorized(update.effective_user.id):
-            await update.message.reply_text("⛔️ Доступ запрещен!")
-            return
-        
-        stats = self.db.get_stats()
-        
-        message = f"""
-📊 СТАТИСТИКА СИГНАЛОВ
 
-Всего сигналов: {stats['total']}
-LONG: {stats['longs']}
-SHORT: {stats['shorts']}
-Средняя уверенность: {stats['avg_confidence']:.1f}%
-"""
-        await update.message.reply_text(message)
-    
-    async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработка команды /help"""
-        if not self.is_authorized(update.effective_user.id):
-            await update.message.reply_text("⛔️ Доступ запрещен!")
+    elif q.data.startswith('exch_'):
+        exchange_name = q.data.replace('exch_', '')
+        db.update_user(user_id, exchange=exchange_name)
+        context.user_data['awaiting_deposit'] = True
+        await q.edit_message_text(
+            f"✅ Биржа <b>{exchange_name.capitalize()}</b> сохранена!\n\nУкажите депозит (например, <code>1000</code>):",
+            parse_mode='HTML'
+        )
+
+    elif q.data.startswith('confirm_take_'):
+        sig_id = int(q.data.split('_')[2])
+        await q.edit_message_reply_markup(reply_markup=get_confirm_take_kb(sig_id))
+
+    elif q.data.startswith('cancel_take_'):
+        sig_id = int(q.data.split('_')[2])
+        conn = get_conn()
+        sig = conn.execute('SELECT coin FROM signals WHERE id=?', (sig_id,)).fetchone()
+        conn.close()
+        if sig:
+            await q.edit_message_reply_markup(reply_markup=get_signal_actions_kb(sig_id, sig['coin'], u.get('exchange', 'binance')))
+
+    elif q.data.startswith('take_'):
+        sig_id = int(q.data.split('_')[1])
+        conn = get_conn()
+        sig_row = conn.execute('SELECT * FROM signals WHERE id=?', (sig_id,)).fetchone()
+        conn.close()
+
+        if sig_row:
+            sig = {
+                'id': sig_id, 'coin': sig_row['coin'], 'signal_type': sig_row['signal_type'],
+                'entry_price': sig_row['entry_price'], 'stop_loss': sig_row['stop_loss'],
+                'target_prices': json.loads(sig_row['target_prices'])
+            }
+            paper.auto_open(user_id, sig)
+            action = "Лонг" if sig['signal_type'] == 'BUY' else "Шорт"
+            await q.edit_message_text(f"✅ <b>Сделка в работу!</b>\nТип: {action}\nБот будет сопровождать её.", parse_mode='HTML')
+
+    elif q.data.startswith('custom_size_'):
+        sig_id = int(q.data.split('_')[2])
+        context.user_data['awaiting_custom_size'] = True
+        context.user_data['custom_size_signal_id'] = sig_id
+        await q.edit_message_text("💰 Введите сумму в USDT, на которую вы открыли позицию:")
+
+    elif q.data.startswith('skip_'):
+        await q.edit_message_text(f"{q.message.text}\n\n❌ <i>Сигнал пропущен.</i>", parse_mode='HTML')
+
+    elif q.data == 'tariff_pro':
+        inv = payment.create_invoice(user_id, 'pro')
+        if inv:
+            await q.edit_message_text(
+                f"💳 <b>Оплата PRO</b>\n\nСумма: <b>{inv['amount']} USDT</b>",
+                reply_markup=payment_kb(inv['pay_url'], inv['invoice_id']),
+                parse_mode='HTML'
+            )
+        else:
+            await q.edit_message_text("❌ Ошибка создания счета.")
+
+    elif q.data.startswith('check_'):
+        invoice_id = int(q.data.split('_')[1])
+        if db.invoice_already_used(invoice_id):
+            await q.answer("Этот счет уже использован.", show_alert=True)
             return
-        
-        help_text = """
-🤖 CRYPTO SIGNALS BOT
+        if payment.check_invoice(invoice_id, user_id):
+            db.mark_invoice_paid(invoice_id, user_id, 'pro')
+            expiry = (datetime.now() + timedelta(days=30)).isoformat()
+            db.update_user(user_id, tariff='pro', tariff_expiry=expiry)
+            await q.edit_message_text("🎉 <b>Оплата получена!</b>\nТариф PRO активирован на 30 дней.", parse_mode='HTML')
+        else:
+            await q.answer("Оплата еще не поступила. Подождите и нажмите снова.", show_alert=True)
 
-📋 Команды:
-/start - Запустить бота
-/signals - Все сигналы
-/long - Только LONG
-/short - Только SHORT
-/stats - Статистика
-/help - Помощь
 
-🎯 Что вы получаете:
-• Направление (LONG/SHORT)
-• Точку входа
-• Стоп-лосс
-• Тейк-профит
-• Уровень уверенности
-• Risk/Reward ratio
+# === ТЕКСТ ===
+async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    u = db.get_user(update.effective_user.id)
 
-⚠️ Всегда используйте стоп-лосс!
-"""
-        await update.message.reply_text(help_text)
-    
-    async def run_auto_signals(self):
-        """Автоматические сигналы каждые 4 часа"""
-        logger.info("Starting auto signals...")
-        
-        await asyncio.sleep(10)
-        
-        while self.is_running:
-            try:
-                logger.info("Generating auto signals...")
-                
-                signals = await self.analyzer.generate_all_signals(5)
-                
-                if signals and self.application:
-                    message = "🔔 АВТОМАТИЧЕСКИЕ СИГНАЛЫ\n\n"
-                    
-                    for signal in signals:
-                        message += self.format_signal(signal)
-                        self.db.save_signal(signal)
-                        message += "\n"
-                    
-                    await self.application.bot.send_message(
-                        chat_id=OWNER_ID,
-                        text=message
-                    )
-                    logger.info("Auto signals sent!")
-                
-                await asyncio.sleep(4 * 60 * 60)
-                
-            except Exception as e:
-                logger.error(f"Error in auto signals: {e}")
-                await asyncio.sleep(60)
-    
-    async def run(self):
-        """Запуск бота"""
-        self.application = Application.builder().token(self.token).build()
-        
-        self.application.add_handler(CommandHandler("start", self.start_command))
-        self.application.add_handler(CommandHandler("signals", self.signals_command))
-        self.application.add_handler(CommandHandler("long", self.long_command))
-        self.application.add_handler(CommandHandler("short", self.short_command))
-        self.application.add_handler(CommandHandler("stats", self.stats_command))
-        self.application.add_handler(CommandHandler("help", self.help_command))
-        
-        await self.application.initialize()
-        await self.application.start()
-        await self.application.updater.start_polling()
-        
-        logger.info("Bot started!")
-        
-        await self.send_test_message()
-        
-        asyncio.create_task(self.run_auto_signals())
-        
+    if context.user_data.get('awaiting_deposit'):
         try:
-            while True:
-                await asyncio.sleep(1)
-        finally:
-            self.is_running = False
-            await self.analyzer.close_session()
-            await self.application.stop()
+            amount = float(text.replace(',', '.'))
+            if amount <= 0: raise ValueError
+            db.update_user(u['user_id'], balance_usdt=amount)
+            context.user_data['awaiting_deposit'] = False
+            await update.message.reply_text(
+                f"✅ Баланс установлен: <b>{amount:.2f} USDT</b>.",
+                reply_markup=get_reply_main_menu(u['user_id']), parse_mode='HTML'
+            )
+        except ValueError:
+            await update.message.reply_text("❌ Введите число.")
+        return
 
-async def main():
-    """Главная функция"""
-    bot = TelegramBot(BOT_TOKEN)
-    await bot.run()
+    if context.user_data.get('awaiting_custom_size'):
+        try:
+            amount = float(text.replace(',', '.'))
+            if amount <= 0: raise ValueError
+            sig_id = context.user_data['custom_size_signal_id']
+            conn = get_conn()
+            sig_row = conn.execute('SELECT * FROM signals WHERE id=?', (sig_id,)).fetchone()
+            conn.close()
+            if sig_row:
+                sig = {
+                    'id': sig_id, 'coin': sig_row['coin'], 'signal_type': sig_row['signal_type'],
+                    'entry_price': sig_row['entry_price'], 'stop_loss': sig_row['stop_loss'],
+                    'target_prices': json.loads(sig_row['target_prices'])
+                }
+                paper.auto_open(u['user_id'], sig, custom_size=amount)
+                await update.message.reply_text(f"✅ Сделка по {sig['coin']} открыта на ${amount:.2f}.")
+            context.user_data['awaiting_custom_size'] = False
+        except ValueError:
+            await update.message.reply_text("❌ Введите число.")
+        return
 
-if __name__ == "__main__":
-    asyncio.run(main())
+    if text == "📊 Сигналы":
+        await top_signals_cmd(update, context)
+    elif text == "💎 Тарифы":
+        await update.message.reply_text("💎 <b>Тарифы</b>\n\nFree - 3 сигнала/день (BTC, ETH)\nPRO - $30/мес (все монеты)", reply_markup=tariffs_kb(), parse_mode='HTML')
+    elif text == "💼 Мой профит":
+        trades = db.get_open_trades(u['user_id'])
+        await update.message.reply_text(f"💼 Открытых сделок: {len(trades)}")
+    else:
+        await update.message.reply_text("Пожалуйста, пользуйтесь кнопками меню 👇", reply_markup=get_reply_main_menu(u['user_id']))
+
+
+# === ЗАПУСК ===
+async def post_init(app: Application):
+    asyncio.create_task(tracker.monitor(app.bot))
+
+
+def main():
+    app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
+    app.add_handler(CommandHandler('start', start))
+    app.add_handler(CallbackQueryHandler(on_callback))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_message))
+    print("ShiperSignal запущен!")
+    app.run_polling()
+
+
+if __name__ == '__main__':
+    main()
