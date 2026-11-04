@@ -28,7 +28,6 @@ ALL_COINS = sorted(set(sum(COINS.values(), [])))
 TRIAL_PERIOD_DAYS = 3
 TRIAL_TARIFF = 'pro'
 
-# ВОТ ЭТИ ПЕРЕМЕННЫЕ НУЖНО ДОБАВИТЬ:
 TAKER_FEE = 0.001
 SLIPPAGE = 0.0005
 MIN_RR = 1.8
