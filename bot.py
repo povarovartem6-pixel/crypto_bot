@@ -6,10 +6,7 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Mess
 from config import *
 from database import Database, get_conn
 from signals import SignalGenerator
-from keyboards import (
-    get_reply_main_menu, get_onboarding_kb, get_legal_kb, get_exchange_kb,
-    get_signal_actions_kb, get_confirm_take_kb, payment_kb, tariffs_kb
-)
+from keyboards import *
 from tracker import TradeTracker, PaperTrader
 from chart_generator import generate_signal_chart
 from payments import CryptoBotPayment
@@ -28,27 +25,22 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db.add_user(u.id, u.username or '', u.first_name or '', u.last_name or '')
     user = db.get_user(u.id)
 
-    # Онбординг
     if not context.user_data.get('onboard_done'):
         instruction = f"""
 👋 <b>Добро пожаловать в ShiperSignal, {u.first_name}!</b>
 
 Перед началом работы, пожалуйста, ознакомьтесь с инструкцией:
 
-1️⃣ <b>Бот работает на ФЬЮЧЕРСАХ.</b> Плечо подбирается автоматически. Не ставьте больше, чем советует бот - это риск ликвидации.
-
-2️⃣ <b>Как брать сигнал?</b> Нажмите кнопку <b>✅ «Взять в работу»</b>. Бот будет сопровождать сделку.
-
-3️⃣ <b>Риск-менеджмент.</b> Всегда ставьте стоп-лосс и не рискуйте больше 1% от депозита.
-
-4️⃣ <b>Бесплатная версия (Free).</b> 3 сигнала в день по BTC и ETH. Для доступа к 80+ монетам оформите PRO.
+1️⃣ <b>Бот работает на ФЬЮЧЕРСАХ.</b> Плечо подбирается автоматически.
+2️⃣ <b>Как брать сигнал?</b> Нажмите кнопку <b>✅ «Взять в работу»</b>.
+3️⃣ <b>Риск-менеджмент.</b> Всегда ставьте стоп-лосс и не рискуйте больше 1%.
+4️⃣ <b>Бесплатная версия.</b> 3 сигнала в день по BTC и ETH.
 
 ⚠️ <i>Бот не гарантирует прибыль. Это инструмент аналитики.</i>
 """
         await update.message.reply_text(instruction, reply_markup=get_onboarding_kb(), parse_mode='HTML')
         return
 
-    # Баланс
     if user['balance_usdt'] == 0:
         context.user_data['awaiting_deposit'] = True
         await update.message.reply_text("💰 Укажите ваш стартовый виртуальный депозит (например, <code>1000</code>):", parse_mode='HTML')
@@ -95,10 +87,10 @@ async def top_signals_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(text, reply_markup=kb, parse_mode='HTML')
 
 
-# === CALLBACKS ===
+# === CALLBACKS (ОБРАБОТЧИК КНОПОК) ===
 async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
-    await q.answer()
+    await q.answer() # Эта строчка убирает часики с кнопки
     user_id = q.from_user.id
     u = db.get_user(user_id)
 
@@ -242,12 +234,18 @@ async def post_init(app: Application):
 
 def main():
     app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
+    
+    # Обработка команды /start
     app.add_handler(CommandHandler('start', start))
+    
+    # Обработка ВСЕХ кнопок (включая твою "Я ознакомился")
     app.add_handler(CallbackQueryHandler(on_callback))
+    
+    # Обработка текста (кнопки меню)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_message))
+    
     print("ShiperSignal запущен!")
     app.run_polling()
-
 
 if __name__ == '__main__':
     main()
