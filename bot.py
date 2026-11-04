@@ -24,7 +24,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db.add_user(u.id, u.username or '', u.first_name or '')
     user = db.get_user(u.id)
 
-    # ВЕЧНЫЙ PRO ДЛЯ АДМИНА
     if u.id in ADMIN_IDS:
         db.update_user(u.id, tariff='pro', tariff_expiry='2099-12-31T23:59:59')
         user['tariff'] = 'pro'
@@ -158,25 +157,28 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await q.answer("Оплата не найдена. Подождите.", show_alert=True)
 
-# === ТЕКСТ ===
+# === ТЕКСТ (ОБРАБОТЧИК ВСЕХ КНОПОК) ===
 async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
-    u = db.get_user(update.effective_user.id)
+    user_id = update.effective_user.id
+    u = db.get_user(user_id)
 
-    if u['user_id'] in ADMIN_IDS:
-        db.update_user(u['user_id'], tariff='pro', tariff_expiry='2099-12-31T23:59:59')
+    # Принудительно выдаем PRO, если это админ
+    if user_id in ADMIN_IDS:
+        db.update_user(user_id, tariff='pro', tariff_expiry='2099-12-31T23:59:59')
         u['tariff'] = 'pro'
 
     if context.user_data.get('awaiting_deposit'):
         try:
             amount = float(text.replace(',', '.'))
-            db.update_user(u['user_id'], balance_usdt=amount)
+            db.update_user(user_id, balance_usdt=amount)
             context.user_data['awaiting_deposit'] = False
-            await update.message.reply_text(f"✅ Баланс: <b>{amount:.2f} USDT</b>.", reply_markup=get_reply_main_menu(u['user_id']), parse_mode='HTML')
+            await update.message.reply_text(f"✅ Баланс: <b>{amount:.2f} USDT</b>.", reply_markup=get_reply_main_menu(user_id), parse_mode='HTML')
         except ValueError:
             await update.message.reply_text("❌ Введите число.")
         return
 
+    # ЖЕСТКАЯ ПРОВЕРКА ТЕКСТА КНОПОК
     if text == "📊 Сигналы": 
         await top_signals_cmd(update, context)
     elif text == "💎 Тарифы": 
@@ -223,7 +225,10 @@ def main():
     app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
     app.add_handler(CommandHandler('start', start))
     app.add_handler(CallbackQueryHandler(on_callback))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_message))
+    
+    # Ловим ВСЕ сообщения, чтобы точно поймать кнопки
+    app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, on_message))
+    
     print("ShiperSignal запущен!")
     app.run_polling()
 
