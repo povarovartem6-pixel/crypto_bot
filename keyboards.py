@@ -60,7 +60,6 @@ def tariffs_kb():
 # === КРАСИВОЕ МЕНЮ ОБУЧЕНИЯ ===
 
 def get_lessons_levels_kb():
-    """Главное меню обучения (выбор уровней)"""
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🟢 Уровень 1: База", callback_data='level_lvl1')],
         [InlineKeyboardButton("🟡 Уровень 2: Индикаторы", callback_data='level_lvl2')],
@@ -69,7 +68,6 @@ def get_lessons_levels_kb():
     ])
 
 def get_level_lessons_kb(level_prefix, user_lessons_done: list):
-    """Уроки внутри выбранного уровня (с галочками прогресса)"""
     kb = []
     for key, lesson in LESSONS.items():
         if key.startswith(level_prefix):
@@ -81,7 +79,6 @@ def get_level_lessons_kb(level_prefix, user_lessons_done: list):
     return InlineKeyboardMarkup(kb)
 
 def get_lesson_back_kb(level_prefix):
-    """Кнопка возврата из самого текста урока"""
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🔙 Назад к урокам", callback_data=f'level_{level_prefix}')]
     ])
