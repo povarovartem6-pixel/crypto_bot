@@ -3,19 +3,16 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Токены берутся из переменных окружения (ты должен был добавить их в настройках BotHost)
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 CRYPTOBOT_API_TOKEN = os.getenv('CRYPTOBOT_API_TOKEN')
 ADMIN_IDS = [int(x) for x in os.getenv('ADMIN_IDS', '').split(',') if x.strip()]
 
-# Настройки тарифов
 TARIFFS = {
     'free':  {'name': 'Free',  'price': 0,  'coins_limit': 2,   'timeframes': ['15м', '1ч'], 'delay': 0, 'signals_per_day': 3},
     'pro':   {'name': 'PRO',   'price': 30, 'coins_limit': 999, 'timeframes': ['5м', '15м', '1ч', '4ч', '1д'], 'delay': 0, 'signals_per_day': 999},
     'vip':   {'name': 'VIP',   'price': 50, 'coins_limit': 999, 'timeframes': ['5м', '15м', '1ч', '4ч', '1д'], 'delay': 0, 'signals_per_day': 999},
 }
 
-# Список монет
 COINS = {
     'top20': ['BTC','ETH','BNB','SOL','XRP','ADA','DOGE','AVAX','DOT','LINK',
               'MATIC','UNI','ATOM','LTC','BCH','NEAR','ALGO','VET','ICP','FIL'],
@@ -28,9 +25,15 @@ COINS = {
 }
 ALL_COINS = sorted(set(sum(COINS.values(), [])))
 
-# Константы
 TRIAL_PERIOD_DAYS = 3
 TRIAL_TARIFF = 'pro'
+
+# ВОТ ЭТИ ПЕРЕМЕННЫЕ НУЖНО ДОБАВИТЬ:
+TAKER_FEE = 0.001
+SLIPPAGE = 0.0005
+MIN_RR = 1.8
+MIN_EDGE = 0.003
+RISK_PER_TRADE = 0.01
 
 FUTURES_CONFIG = {
     'max_leverage': 10,
@@ -39,7 +42,6 @@ FUTURES_CONFIG = {
     'risk_per_trade': 0.01,
 }
 
-# Юридический текст
 LEGAL_DISCLAIMER = """
 📄 <b>ПРАВИЛА ПОЛЬЗОВАНИЯ И ОТКАЗ ОТ ОТВЕТСТВЕННОСТИ</b>
 
