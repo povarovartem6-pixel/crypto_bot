@@ -28,13 +28,24 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         db.update_user(u.id, tariff='pro', tariff_expiry='2099-12-31T23:59:59')
 
     if not context.user_data.get('onboard_done'):
-        instruction = f"👋 <b>Привет, {u.first_name}!</b>\n\nНажми кнопку ниже, чтобы ознакомиться с инструкцией."
+        instruction = f"""
+👋 <b>Добро пожаловать в ShiperSignal, {u.first_name}!</b>
+
+Перед началом работы, пожалуйста, ознакомьтесь с инструкцией:
+
+1️⃣ <b>Бот работает на ФЬЮЧЕРСАХ.</b> Плечо подбирается автоматически.
+2️⃣ <b>Как брать сигнал?</b> Нажмите кнопку <b>✅ «Взять в работу»</b>.
+3️⃣ <b>Риск-менеджмент.</b> Всегда ставьте стоп-лосс и не рискуйте больше 1%.
+4️⃣ <b>Бесплатная версия.</b> 3 сигнала в день по BTC и ETH.
+
+⚠️ <i>Бот не гарантирует прибыль. Это инструмент аналитики.</i>
+"""
         await update.message.reply_text(instruction, reply_markup=get_onboarding_kb(), parse_mode='HTML')
         return
 
     if user['balance_usdt'] == 0:
         context.user_data['awaiting_deposit'] = True
-        await update.message.reply_text("💰 Укажите ваш депозит (например, <code>1000</code>):", parse_mode='HTML')
+        await update.message.reply_text("💰 Укажите ваш стартовый виртуальный депозит (например, <code>1000</code>):", parse_mode='HTML')
         return
 
     await update.message.reply_text("👋 Главное меню:", reply_markup=get_reply_main_menu(u.id))
@@ -44,7 +55,7 @@ async def top_signals_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = db.get_user(update.effective_user.id)
     
     if u['tariff'] == 'free' and context.user_data.get('signals_today', 0) >= 3:
-        await update.message.reply_text("🛑 <b>Лимит (3/3) исчерпан.</b>\n\nОформите PRO для доступа к 80+ монетам.", parse_mode='HTML')
+        await update.message.reply_text("🛑 <b>Лимит (3/3) исчерпан.</b>\n\nОформите PRO.", parse_mode='HTML')
         return
 
     coins = ['BTC', 'ETH'] if u['tariff'] == 'free' else ALL_COINS[:10]
@@ -60,14 +71,19 @@ async def top_signals_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     s = sigs[0]
     text = sig_gen.format(s, user_balance=u.get('balance_usdt', 1000), exchange_name=u.get('exchange', 'binance'))
     kb = get_signal_actions_kb(s['id'], s['coin'], u.get('exchange', 'binance'))
-    chart = generate_signal_chart(s['coin'], s['signal_type'], s['entry_price'], s['stop_loss'], s['target_prices'][0])
+    
+    try:
+        chart = generate_signal_chart(s['coin'], s['signal_type'], s['entry_price'], s['stop_loss'], s['target_prices'][0])
+    except Exception:
+        chart = None
 
     if chart:
         await update.message.reply_photo(photo=chart, caption=text, reply_markup=kb, parse_mode='HTML')
     else:
         await update.message.reply_text(text, reply_markup=kb, parse_mode='HTML')
 
-# === CALLBACKS ===
+
+# === ОБРАБОТЧИК ВСЕХ КНОПОК (CALLBACKS) ===
 async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
@@ -76,9 +92,11 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if q.data == 'onboard_read':
         await q.edit_message_text(LEGAL_DISCLAIMER, reply_markup=get_legal_kb(), parse_mode='HTML')
+        
     elif q.data == 'legal_accept':
         context.user_data['onboard_done'] = True
         await q.edit_message_text("🏦 <b>Выберите вашу биржу:</b>", reply_markup=get_exchange_kb(), parse_mode='HTML')
+        
     elif q.data.startswith('exch_'):
         exch = q.data.replace('exch_', '')
         db.update_user(user_id, exchange=exch)
@@ -96,6 +114,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         db.update_user(user_id, tariff='pro', tariff_expiry=expiry, trial_used=1)
         await q.edit_message_text("🎉 <b>Пробный PRO активирован на 3 дня!</b>\n\nВсе ограничения сняты.", parse_mode='HTML')
 
+    # Обработка сделок
     elif q.data.startswith('take_'):
         sig_id = int(q.data.split('_')[1])
         conn = get_conn()
@@ -109,6 +128,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif q.data.startswith('skip_'):
         await q.edit_message_text(f"❌ <b>Сигнал ПРОПУЩЕН.</b>", parse_mode='HTML')
 
+    # Обучение
     elif q.data == 'lessons_menu':
         done = json.loads(u.get('lessons_done', '[]'))
         await q.edit_message_text("🎓 <b>Выберите урок:</b>", reply_markup=get_lessons_kb(done), parse_mode='HTML')
@@ -119,6 +139,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             db.mark_lesson_done(user_id, key)
             await q.edit_message_text(LESSONS[key]['text'], reply_markup=get_lesson_back_kb(), parse_mode='HTML')
 
+    # История и оплата
     elif q.data == 'trade_history':
         trades = db.get_closed_trades(user_id, 5)
         if not trades:
@@ -150,7 +171,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await q.answer("Оплата не найдена. Подождите.", show_alert=True)
 
-# === ТЕКСТ ===
+# === ТЕКСТОВЫЕ КНОПКИ ===
 async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     u = db.get_user(update.effective_user.id)
@@ -170,19 +191,24 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if text == "📊 Сигналы": 
         await top_signals_cmd(update, context)
+        
     elif text == "💎 Тарифы": 
         await update.message.reply_text("💎 <b>Тарифы</b>\n\nPRO - $30/мес (все монеты)", reply_markup=tariffs_kb(), parse_mode='HTML')
+        
     elif text == "🎓 Обучение": 
         done = json.loads(u.get('lessons_done', '[]'))
         await update.message.reply_text("🎓 <b>База знаний:</b>", reply_markup=get_lessons_kb(done), parse_mode='HTML')
+        
     elif text == "👤 Профиль":
         kb = get_profile_kb()
+        # Добавляем кнопку триала, если тариф Free и триал не использован
         if u['tariff'] == 'free' and not u['trial_used']:
             kb.inline_keyboard.insert(0, [InlineKeyboardButton("🎁 Пробный PRO (3 дня)", callback_data='activate_trial')])
             
         await update.message.reply_text(
             f"👤 <b>Профиль</b>\n\nID: <code>{u['user_id']}</code>\nТариф: <b>{u['tariff'].upper()}</b>\nБиржа: {u.get('exchange', 'binance').capitalize()}\nБаланс: {u.get('balance_usdt', 0):.2f} USDT",
             reply_markup=kb, parse_mode='HTML')
+            
     elif text == "💼 Мой профит":
         trades = db.get_closed_trades(u['user_id'], 100)
         pnl = sum(t['realized_pnl'] for t in trades)
@@ -193,16 +219,20 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f"💼 <b>Статистика</b>\n\nБаланс: <b>{u.get('balance_usdt', 1000):.2f} USDT</b>\nPnL: <b>{pnl:+.2f} USDT</b>\nСделок: {total} | Винрейт: <b>{winrate:.1f}%</b>",
             parse_mode='HTML')
+            
     elif text == "💬 Чат трейдеров":
         if u['tariff'] in ['pro', 'vip']:
             await update.message.reply_text(f"💬 <b>Закрытый чат</b>\n\nВаш доступ подтвержден.\nСсылка: {CHAT_LINK}", parse_mode='HTML')
         else:
             await update.message.reply_text("🔒 <b>Доступ ограничен.</b>\n\nЧат доступен только для PRO.", parse_mode='HTML')
+            
     elif text == "🆘 Поддержка":
         await update.message.reply_text(f"🆘 <b>Служба поддержки</b>\n\nНапишите нам: {SUPPORT_LINK}", parse_mode='HTML')
+        
     elif text == "👑 Админ-панель" and u['user_id'] in ADMIN_IDS:
         users = db.get_all_users()
         await update.message.reply_text(f"👑 <b>Админ-панель</b>\n\nВсего пользователей: {len(users)}", parse_mode='HTML')
+        
     else:
         await update.message.reply_text("Пользуйтесь кнопками меню 👇", reply_markup=get_reply_main_menu(u['user_id']))
 
