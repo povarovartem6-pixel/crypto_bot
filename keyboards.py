@@ -18,16 +18,12 @@ def get_profile_kb():
         [InlineKeyboardButton("📜 История сделок", callback_data='trade_history')]
     ])
 
-def get_trial_kb():
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🎁 Активировать пробный PRO (3 дня)", callback_data='activate_trial')]
-    ])
-
 def get_lessons_kb(user_lessons_done: list):
     kb = []
     for key, lesson in LESSONS.items():
         status = "✅ " if key in user_lessons_done else ""
         kb.append([InlineKeyboardButton(f"{status}{lesson['title']}", callback_data=f'lesson_{key}')])
+    kb.append([InlineKeyboardButton("🔙 В главное меню", callback_data='main_menu')])
     return InlineKeyboardMarkup(kb)
 
 def get_lesson_back_kb():
