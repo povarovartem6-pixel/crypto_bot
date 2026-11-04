@@ -18,17 +18,6 @@ def get_profile_kb():
         [InlineKeyboardButton("📜 История сделок", callback_data='trade_history')]
     ])
 
-def get_lessons_kb(user_lessons_done: list):
-    kb = []
-    for key, lesson in LESSONS.items():
-        status = "✅ " if key in user_lessons_done else ""
-        kb.append([InlineKeyboardButton(f"{status}{lesson['title']}", callback_data=f'lesson_{key}')])
-    kb.append([InlineKeyboardButton("🔙 В главное меню", callback_data='main_menu')])
-    return InlineKeyboardMarkup(kb)
-
-def get_lesson_back_kb():
-    return InlineKeyboardMarkup([[InlineKeyboardButton("🔙 К списку уроков", callback_data='lessons_menu')]])
-
 def get_onboarding_kb():
     return InlineKeyboardMarkup([[InlineKeyboardButton("✅ Я ознакомился", callback_data='onboard_read')]])
 
@@ -66,4 +55,35 @@ def payment_kb(pay_url, invoice_id):
 def tariffs_kb():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🔥 PRO - $30/мес", callback_data='tariff_pro')],
+    ])
+
+# === КРАСИВОЕ МЕНЮ ОБУЧЕНИЯ ===
+
+def get_lessons_levels_kb():
+    """Главное меню обучения (выбор уровней)"""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🟢 Уровень 1: База", callback_data='level_lvl1')],
+        [InlineKeyboardButton("🟡 Уровень 2: Индикаторы", callback_data='level_lvl2')],
+        [InlineKeyboardButton("🔴 Уровень 3: Практика", callback_data='level_lvl3')],
+        [InlineKeyboardButton("🔙 В главное меню", callback_data='main_menu')]
+    ])
+
+def get_level_lessons_kb(level_prefix, user_lessons_done: list):
+    """Уроки внутри выбранного уровня (с галочками прогресса)"""
+    kb = []
+    for key, lesson in LESSONS.items():
+        if key.startswith(level_prefix):
+            # Убираем "Уровень X: " из названия, чтобы кнопка была компактной
+            title = lesson['title'].split(': ')[-1]
+            status = "✅ " if key in user_lessons_done else ""
+            kb.append([InlineKeyboardButton(f"{status}{title}", callback_data=f'lesson_{key}')])
+    
+    # Кнопка возврата к списку уровней
+    kb.append([InlineKeyboardButton("🔙 Назад к уровням", callback_data='lessons_menu')])
+    return InlineKeyboardMarkup(kb)
+
+def get_lesson_back_kb(level_prefix):
+    """Кнопка возврата из самого текста урока"""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔙 Назад к урокам", callback_data=f'level_{level_prefix}')]
     ])
