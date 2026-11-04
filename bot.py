@@ -109,7 +109,14 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         sig_row = conn.execute('SELECT * FROM signals WHERE id=?', (sig_id,)).fetchone()
         conn.close()
         if sig_row:
-            sig = {'id': sig_id, 'coin': sig_row['coin'], 'signal_type': sig_row['signal_type'], 'entry_price': sig_row['entry_price'], 'stop_loss': sig_row['stop_loss'], 'target_prices': json.loads(sig_row['target_prices'])}
+            sig = {
+                'id': sig_id, 
+                'coin': sig_row['coin'], 
+                'signal_type': sig_row['signal_type'], 
+                'entry_price': sig_row['entry_price'], 
+                'stop_loss': sig_row['stop_loss'], 
+                'target_prices': json.loads(sig_row['target_prices'])
+            }
             paper.auto_open(user_id, sig)
             await q.edit_message_text(f"✅ <b>Сигнал ПРИНЯТ в работу.</b>\n\nБот будет сопровождать сделку.", parse_mode='HTML')
             
