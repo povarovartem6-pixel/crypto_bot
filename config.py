@@ -5,10 +5,11 @@ load_dotenv()
 
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 CRYPTOBOT_API_TOKEN = os.getenv('CRYPTOBOT_API_TOKEN')
+# Важно: здесь мы ищем ADMIN_IDS (с буквой S)
 ADMIN_IDS = [int(x) for x in os.getenv('ADMIN_IDS', '').split(',') if x.strip()]
 
 SUPPORT_LINK = "https://t.me/shipersupportbot"
-CHAT_LINK = "https://t.me/your_chat"  # Замени, когда создашь чат
+CHAT_LINK = "https://t.me/your_chat" 
 
 TARIFFS = {
     'free':  {'name': 'Free',  'price': 0,  'coins_limit': 2,   'timeframes': ['15м', '1ч'], 'signals_per_day': 3},
@@ -27,7 +28,6 @@ ALL_COINS = sorted(set(sum(COINS.values(), [])))
 
 FUTURES_CONFIG = {'max_leverage': 10, 'min_leverage': 1, 'risk_per_trade': 0.01}
 
-# Математика для сигналов
 TAKER_FEE = 0.001
 SLIPPAGE = 0.0005
 MIN_RR = 1.8
