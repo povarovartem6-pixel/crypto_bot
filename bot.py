@@ -51,7 +51,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=get_reply_main_menu(u.id)
     )
 
-
 # === СИГНАЛЫ ===
 async def top_signals_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = db.get_user(update.effective_user.id)
@@ -86,11 +85,10 @@ async def top_signals_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text(text, reply_markup=kb, parse_mode='HTML')
 
-
-# === CALLBACKS (ОБРАБОТЧИК КНОПОК) ===
+# === CALLBACKS ===
 async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
-    await q.answer() # Эта строчка убирает часики с кнопки
+    await q.answer()
     user_id = q.from_user.id
     u = db.get_user(user_id)
 
@@ -175,7 +173,6 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await q.answer("Оплата еще не поступила. Подождите и нажмите снова.", show_alert=True)
 
-
 # === ТЕКСТ ===
 async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
@@ -226,24 +223,15 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("Пожалуйста, пользуйтесь кнопками меню 👇", reply_markup=get_reply_main_menu(u['user_id']))
 
-
 # === ЗАПУСК ===
 async def post_init(app: Application):
     asyncio.create_task(tracker.monitor(app.bot))
 
-
 def main():
     app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
-    
-    # Обработка команды /start
     app.add_handler(CommandHandler('start', start))
-    
-    # Обработка ВСЕХ кнопок (включая твою "Я ознакомился")
     app.add_handler(CallbackQueryHandler(on_callback))
-    
-    # Обработка текста (кнопки меню)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_message))
-    
     print("ShiperSignal запущен!")
     app.run_polling()
 
