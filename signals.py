@@ -46,11 +46,9 @@ class SignalGenerator:
         
         sig = {
             'coin': coin, 'symbol': symbol, 'timeframe': timeframe,
-            'signal_type': r['signal_type'],
-            'entry_price': float(price), 'stop_loss': float(sl),
+            'signal_type': r['signal_type'], 'entry_price': float(price), 'stop_loss': float(sl),
             'target_prices': [float(tp1), float(tp2), float(tp3)],
-            'risk_reward': float(rr), 'confidence': float(r['confidence']),
-            'atr_pct': r['atr_pct']
+            'risk_reward': float(rr), 'confidence': float(r['confidence']), 'atr_pct': r['atr_pct']
         }
         sig['id'] = self.db.add_signal(**sig)
         return sig
@@ -66,36 +64,31 @@ class SignalGenerator:
         return out
 
     def format(self, s, user_balance=1000, exchange_name='binance'):
-        if s['signal_type'] == 'BUY':
-            e_icon = '🟢📈'
-            action_text = 'ЛОНГ (Покупка)'
-            warning = ''
-        else:
-            e_icon = '🔴📉'
-            action_text = 'ШОРТ (Продажа)'
-            warning = '\n⚠️ <b>Внимание:</b> Шорт - это высокий риск! Плечо не выше 3x, стоп строго обязателен.'
-
+        icon = '🟢📈' if s['signal_type'] == 'BUY' else '🔴📉'
+        action = 'ЛОНГ' if s['signal_type'] == 'BUY' else 'ШОРТ'
+        
         atr_pct = s.get('atr_pct', 1.0)
         rec_lev = self.calculate_leverage(atr_pct)
         
         risk_usdt = user_balance * FUTURES_CONFIG['risk_per_trade']
-        risk_percent = abs(s['entry_price'] - s['stop_loss']) / s['entry_price']
-        rec_size = (risk_usdt / (risk_percent * rec_lev)) if risk_percent > 0 else 0
+        risk_pct = abs(s['entry_price'] - s['stop_loss']) / s['entry_price']
+        rec_size = (risk_usdt / (risk_pct * rec_lev)) if risk_pct > 0 else 0
 
-        txt = f"""
-{e_icon} <b>{s['signal_type']} | {s['coin']}/USDT (Фьючерсы)</b>
+        min_lev = max(1, rec_lev - 1)
+        max_lev = min(10, rec_lev + 1)
+
+        return f"""
+{icon} <b>{s['signal_type']} | {s['coin']}/USDT</b>
 ━━━━━━━━━━━━━━━━━━━━
-┃ 🎯 <b>Сделка:</b> {action_text}
-┃ ⏱ <b>ТФ:</b> {s['timeframe']} | <b>R:R</b> 1:{s['risk_reward']:.1f}
-┃ 📊 <b>Уверенность:</b> {s['confidence']:.0f}%
-━━━━━━━━━━━━━━━━━━━━
+🎯 <b>Сделка:</b> {action}
+⏱ <b>ТФ:</b> {s['timeframe']} | R:R 1:{s['risk_reward']:.1f}
+📊 <b>Уверенность:</b> {s['confidence']:.0f}%
+
 <blockquote>💰 <b>Вход:</b> ${s['entry_price']:.5g}
-🛑 <b>Стоп-лосс:</b> ${s['stop_loss']:.5g}
-🎯 <b>Цель 1 (TP1):</b> ${s['target_prices'][0]:.5g}
-🎯 <b>Цель 2 (TP2):</b> ${s['target_prices'][1]:.5g}</blockquote>
+🛑 <b>Стоп:</b> ${s['stop_loss']:.5g}
+🎯 <b>TP1:</b> ${s['target_prices'][0]:.5g}</blockquote>
 
-⚙️ <b>Рекомендации по фьючерсам:</b>
-┃ Плечо: <b>{max(1, rec_lev-2)}x - {rec_lev+3}x</b> (оптимально {rec_lev}x)
-┃ Размер позиции: <b>${rec_size:.2f}</b>{warning}
+⚙️ <b>Рекомендации:</b>
+Плечо: <b>{min_lev}x - {max_lev}x</b> (оптимально {rec_lev}x)
+Размер: <b>${rec_size:.2f}</b>
 """
-        return txt
