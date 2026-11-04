@@ -73,12 +73,10 @@ def get_level_lessons_kb(level_prefix, user_lessons_done: list):
     kb = []
     for key, lesson in LESSONS.items():
         if key.startswith(level_prefix):
-            # Убираем "Уровень X: " из названия, чтобы кнопка была компактной
             title = lesson['title'].split(': ')[-1]
             status = "✅ " if key in user_lessons_done else ""
             kb.append([InlineKeyboardButton(f"{status}{title}", callback_data=f'lesson_{key}')])
     
-    # Кнопка возврата к списку уровней
     kb.append([InlineKeyboardButton("🔙 Назад к уровням", callback_data='lessons_menu')])
     return InlineKeyboardMarkup(kb)
 
