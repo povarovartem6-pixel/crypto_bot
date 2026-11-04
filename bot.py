@@ -116,15 +116,33 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif q.data.startswith('skip_'):
         await q.edit_message_text(f"❌ <b>Сигнал ПРОПУЩЕН.</b>", parse_mode='HTML')
 
+    # === ОБУЧЕНИЕ ===
     elif q.data == 'lessons_menu':
+        await q.edit_message_text(
+            "🎓 <b>База знаний ShiperSignal</b>\n\nВыберите уровень обучения:",
+            reply_markup=get_lessons_levels_kb(),
+            parse_mode='HTML'
+        )
+        
+    elif q.data.startswith('level_'):
+        level_prefix = q.data.replace('level_', '')
         done = json.loads(u.get('lessons_done', '[]'))
-        await q.edit_message_text("🎓 <b>База знаний:</b>\nВыберите урок:", reply_markup=get_lessons_kb(done), parse_mode='HTML')
+        await q.edit_message_text(
+            f"🎓 <b>Уроки уровня {level_prefix[-1]}</b>",
+            reply_markup=get_level_lessons_kb(level_prefix, done),
+            parse_mode='HTML'
+        )
         
     elif q.data.startswith('lesson_'):
         key = q.data.split('_', 1)[1] 
         if key in LESSONS:
             db.mark_lesson_done(user_id, key)
-            await q.edit_message_text(LESSONS[key]['text'], reply_markup=get_lesson_back_kb(), parse_mode='HTML')
+            level_prefix = key.split('_')[0]
+            await q.edit_message_text(
+                LESSONS[key]['text'], 
+                reply_markup=get_lesson_back_kb(level_prefix), 
+                parse_mode='HTML'
+            )
 
     elif q.data == 'trade_history':
         trades = db.get_closed_trades(user_id, 5)
@@ -157,13 +175,12 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await q.answer("Оплата не найдена. Подождите.", show_alert=True)
 
-# === ТЕКСТ (ОБРАБОТЧИК ВСЕХ КНОПОК) ===
+# === ТЕКСТОВЫЕ КНОПКИ ===
 async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     user_id = update.effective_user.id
     u = db.get_user(user_id)
 
-    # Принудительно выдаем PRO, если это админ
     if user_id in ADMIN_IDS:
         db.update_user(user_id, tariff='pro', tariff_expiry='2099-12-31T23:59:59')
         u['tariff'] = 'pro'
@@ -183,9 +200,14 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await top_signals_cmd(update, context)
     elif text == "💎 Тарифы": 
         await update.message.reply_text("💎 <b>Тарифы</b>\n\nPRO - $30/мес", reply_markup=tariffs_kb(), parse_mode='HTML')
+        
     elif text == "🎓 Обучение": 
-        done = json.loads(u.get('lessons_done', '[]'))
-        await update.message.reply_text("🎓 <b>База знаний:</b>", reply_markup=get_lessons_kb(done), parse_mode='HTML')
+        await update.message.reply_text(
+            "🎓 <b>База знаний ShiperSignal</b>\n\nВыберите уровень обучения:", 
+            reply_markup=get_lessons_levels_kb(), 
+            parse_mode='HTML'
+        )
+        
     elif text == "👤 Профиль":
         kb = get_profile_kb()
         if u['tariff'] == 'free' and not u['trial_used']:
@@ -194,6 +216,7 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f"👤 <b>Профиль</b>\n\nID: <code>{u['user_id']}</code>\nТариф: <b>{u['tariff'].upper()}</b>\nБиржа: {u.get('exchange', 'binance').capitalize()}\nБаланс: {u.get('balance_usdt', 0):.2f} USDT",
             reply_markup=kb, parse_mode='HTML')
+            
     elif text == "💼 Мой профит":
         trades = db.get_closed_trades(u['user_id'], 100)
         pnl = sum(t['realized_pnl'] for t in trades)
@@ -204,13 +227,26 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(
             f"💼 <b>Статистика</b>\n\nБаланс: <b>{u.get('balance_usdt', 1000):.2f} USDT</b>\nPnL: <b>{pnl:+.2f} USDT</b>\nСделок: {total} | Винрейт: <b>{winrate:.1f}%</b>",
             parse_mode='HTML')
+            
     elif text == "💬 Чат трейдеров":
         if u['tariff'] in ['pro', 'vip']:
-            await update.message.reply_text(f"💬 <b>Закрытый чат</b>\n\nСсылка: {CHAT_LINK}", parse_mode='HTML')
+            await update.message.reply_text(
+                "💬 <b>Закрытый чат трейдеров</b>\n\n"
+                "Ваш доступ подтвержден. Мы сейчас завершаем настройку безопасности и наполнение клуба.\n\n"
+                "🚀 Как только чат будет готов, вы получите персональное приглашение прямо в этот бот.",
+                parse_mode='HTML'
+            )
         else:
-            await update.message.reply_text("🔒 <b>Доступ ограничен.</b>\n\nЧат доступен только для PRO.", parse_mode='HTML')
+            await update.message.reply_text(
+                "🔒 <b>Доступ ограничен.</b>\n\n"
+                "Чат трейдеров доступен только для подписчиков тарифа <b>PRO</b>.\n\n"
+                "Оформите подписку в разделе «💎 Тарифы», чтобы получить доступ к закрытому сообществу.",
+                parse_mode='HTML'
+            )
+            
     elif text == "🆘 Поддержка":
         await update.message.reply_text(f"🆘 <b>Служба поддержки</b>\n\nНапишите нам: {SUPPORT_LINK}", parse_mode='HTML')
+        
     elif text == "👑 Админ-панель" and u['user_id'] in ADMIN_IDS:
         users = db.get_all_users()
         await update.message.reply_text(f"👑 <b>Админ-панель</b>\n\nВсего пользователей: {len(users)}", parse_mode='HTML')
@@ -225,10 +261,7 @@ def main():
     app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
     app.add_handler(CommandHandler('start', start))
     app.add_handler(CallbackQueryHandler(on_callback))
-    
-    # Ловим ВСЕ сообщения, чтобы точно поймать кнопки
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, on_message))
-    
     print("ShiperSignal запущен!")
     app.run_polling()
 
