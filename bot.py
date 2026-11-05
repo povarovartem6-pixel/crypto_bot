@@ -1,6 +1,6 @@
 import asyncio, logging, json
 from datetime import datetime, timedelta
-from telegram import Update, InlineKeyboardButton
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
 from config import *
@@ -112,6 +112,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         db.update_user(user_id, tariff='pro', tariff_expiry=expiry, trial_used=1)
         await q.edit_message_text("🎉 <b>Пробный PRO активирован на 3 дня!</b>", parse_mode='HTML')
 
+    # === ОБРАБОТКА СДЕЛОК ===
     elif q.data.startswith('take_'):
         sig_id = int(q.data.split('_')[1])
         conn = get_conn()
@@ -124,11 +125,37 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 'target_prices': json.loads(sig_row['target_prices'])
             }
             paper.auto_open(user_id, sig)
-            await q.edit_message_text(f"✅ <b>Сигнал ПРИНЯТ в работу.</b>\n\nБот будет сопровождать сделку.", parse_mode='HTML')
+            
+            current_text = q.message.caption or q.message.text
+            current_kb = q.message.reply_markup
+            
+            new_kb = None
+            if current_kb and current_kb.inline_keyboard:
+                new_kb = InlineKeyboardMarkup([[current_kb.inline_keyboard[-1][0]]])
+            
+            new_text = current_text + "\n\n✅ <b>Сделка взята в работу</b>"
+            
+            try:
+                await q.edit_message_caption(caption=new_text, reply_markup=new_kb, parse_mode='HTML')
+            except Exception:
+                await q.edit_message_text(text=new_text, reply_markup=new_kb, parse_mode='HTML')
             
     elif q.data.startswith('skip_'):
-        await q.edit_message_text(f"❌ <b>Сигнал ПРОПУЩЕН.</b>", parse_mode='HTML')
+        current_text = q.message.caption or q.message.text
+        current_kb = q.message.reply_markup
+        
+        new_kb = None
+        if current_kb and current_kb.inline_keyboard:
+            new_kb = InlineKeyboardMarkup([[current_kb.inline_keyboard[-1][0]]])
+            
+        new_text = current_text + "\n\n❌ <b>Сделка пропущена</b>"
+        
+        try:
+            await q.edit_message_caption(caption=new_text, reply_markup=new_kb, parse_mode='HTML')
+        except Exception:
+            await q.edit_message_text(text=new_text, reply_markup=new_kb, parse_mode='HTML')
 
+    # === ОБУЧЕНИЕ ===
     elif q.data == 'lessons_menu':
         await q.edit_message_text("🎓 <b>База знаний ShiperSignal</b>\n\nВыберите уровень обучения:", reply_markup=get_lessons_levels_kb(), parse_mode='HTML')
     elif q.data.startswith('level_'):
@@ -192,7 +219,7 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             amount = float(text.replace(',', '.'))
             db.update_user(user_id, balance_usdt=amount)
             context.user_data['awaiting_deposit'] = False
-            u = db.get_user(user_id) # обновляем данные
+            u = db.get_user(user_id)
             await update.message.reply_text(f"✅ Баланс: <b>{amount:.2f} USDT</b>.", reply_markup=get_reply_main_menu(user_id, u.get('trial_used', 0)), parse_mode='HTML')
         except ValueError:
             await update.message.reply_text("❌ Введите число.")
