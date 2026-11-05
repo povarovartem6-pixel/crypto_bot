@@ -1,13 +1,17 @@
 from telegram import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from config import ADMIN_IDS, LESSONS
 
-def get_reply_main_menu(user_id=None):
+def get_reply_main_menu(user_id=None, trial_used=1):
     kb = [
         [KeyboardButton("📊 Сигналы"), KeyboardButton("💼 Мой профит")],
         [KeyboardButton("🎓 Обучение"), KeyboardButton("💎 Тарифы")],
         [KeyboardButton("👤 Профиль"), KeyboardButton("💬 Чат трейдеров")],
         [KeyboardButton("🆘 Поддержка")],
     ]
+    # Добавляем кнопку триала, если он еще не использован
+    if trial_used == 0:
+        kb.insert(0, [KeyboardButton("🎁 Пробный PRO (3 дня)")])
+        
     if user_id in ADMIN_IDS:
         kb.append([KeyboardButton("👑 Админ-панель")])
     return ReplyKeyboardMarkup(kb, resize_keyboard=True, is_persistent=True)
@@ -56,8 +60,6 @@ def tariffs_kb():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🔥 PRO - $30/мес", callback_data='tariff_pro')],
     ])
-
-# === КРАСИВОЕ МЕНЮ ОБУЧЕНИЯ ===
 
 def get_lessons_levels_kb():
     return InlineKeyboardMarkup([
