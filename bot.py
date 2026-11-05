@@ -28,7 +28,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         db.update_user(u.id, tariff='pro', tariff_expiry='2099-12-31T23:59:59')
         user['tariff'] = 'pro'
 
-    # Если баланс не введен -> значит, человек новый или не закончил онбординг
     if user['balance_usdt'] == 0:
         if not context.user_data.get('onboard_done'):
             instruction = f"👋 <b>Привет, {u.first_name}!</b>\n\nНажми кнопку ниже, чтобы ознакомиться с инструкцией."
@@ -39,7 +38,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("💰 Укажите ваш депозит (например, <code>1000</code>):", parse_mode='HTML')
         return
 
-    # Если у него уже есть баланс -> сразу в меню
     await update.message.reply_text(
         f"👋 С возвращением, {u.first_name}!\nВаш баланс: {user['balance_usdt']:.2f} USDT",
         reply_markup=get_reply_main_menu(u.id, user.get('trial_used', 0))
@@ -73,6 +71,47 @@ async def top_signals_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text(text, reply_markup=kb, parse_mode='HTML')
 
+# === АДМИН-ПАНЕЛЬ ЛОГИКА ===
+async def send_admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE, mode='main'):
+    users = db.get_all_users()
+    
+    if mode == 'last_50':
+        filtered_users = users[-50:]
+        title = "👥 <b>Последние 50 пользователей</b>"
+    elif mode == 'only_paid':
+        filtered_users = [u for u in users if u['tariff'] == 'pro']
+        title = "💎 <b>Пользователи с подпиской PRO</b>"
+    else:
+        filtered_users = users
+        title = "👑 <b>Админ-панель</b>"
+
+    total_users = len(users)
+    pro_users = sum(1 for u in users if u['tariff'] == 'pro')
+    
+    header = f"{title}\n\nВсего юзеров: <b>{total_users}</b>\nОплатили (PRO): <b>{pro_users}</b>\n\n"
+    
+    if update.callback_query:
+        await update.callback_query.edit_message_text(header, reply_markup=get_admin_kb(), parse_mode='HTML')
+        chat_id = update.effective_chat.id
+    else:
+        await update.message.reply_text(header, reply_markup=get_admin_kb(), parse_mode='HTML')
+        chat_id = update.effective_chat.id
+
+    if mode != 'main':
+        if not filtered_users:
+            await context.bot.send_message(chat_id=chat_id, text="Список пуст.")
+            return
+            
+        chunk_size = 30
+        chunks = [filtered_users[i:i + chunk_size] for i in range(0, len(filtered_users), chunk_size)]
+        
+        for i, chunk in enumerate(chunks):
+            user_list = f"<b>Стр. {i+1} из {len(chunks)}:</b>\n\n"
+            for usr in chunk:
+                pay_status = "✅" if usr['tariff'] == 'pro' else "🆓"
+                user_list += f"{pay_status} <code>{usr['user_id']}</code> | Баланс: {usr.get('balance_usdt', 0):.1f} $\n"
+            await context.bot.send_message(chat_id=chat_id, text=user_list, parse_mode='HTML')
+
 # === CALLBACKS ===
 async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -87,6 +126,22 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_id in ADMIN_IDS:
         db.update_user(user_id, tariff='pro', tariff_expiry='2099-12-31T23:59:59')
         u['tariff'] = 'pro'
+
+    # --- АДМИНКА ---
+    if q.data == 'admin_last_50':
+        await send_admin_panel(update, context, mode='last_50')
+        return
+    elif q.data == 'admin_only_paid':
+        await send_admin_panel(update, context, mode='only_paid')
+        return
+    elif q.data == 'admin_give_pro':
+        context.user_data['awaiting_pro_id'] = True
+        await q.edit_message_text("🎁 <b>Выдача PRO</b>\n\nОтправьте ID пользователя, которому хотите выдать вечный PRO.")
+        return
+    elif q.data == 'admin_broadcast':
+        context.user_data['awaiting_broadcast'] = True
+        await q.edit_message_text("📢 <b>Режим рассылки</b>\n\nОтправьте текст для рассылки всем пользователям.")
+        return
 
     if q.data == 'main_menu':
         await q.message.reply_text("👋 Главное меню:", reply_markup=get_reply_main_menu(user_id, u.get('trial_used', 0)))
@@ -112,7 +167,6 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         db.update_user(user_id, tariff='pro', tariff_expiry=expiry, trial_used=1)
         await q.edit_message_text("🎉 <b>Пробный PRO активирован на 3 дня!</b>", parse_mode='HTML')
 
-    # === ОБРАБОТКА СДЕЛОК ===
     elif q.data.startswith('take_'):
         sig_id = int(q.data.split('_')[1])
         conn = get_conn()
@@ -155,7 +209,6 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             await q.edit_message_text(text=new_text, reply_markup=new_kb, parse_mode='HTML')
 
-    # === ОБУЧЕНИЕ ===
     elif q.data == 'lessons_menu':
         await q.edit_message_text("🎓 <b>База знаний ShiperSignal</b>\n\nВыберите уровень обучения:", reply_markup=get_lessons_levels_kb(), parse_mode='HTML')
     elif q.data.startswith('level_'):
@@ -198,7 +251,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             db.update_user(user_id, tariff='pro', tariff_expiry=expiry)
             await q.edit_message_text("🎉 <b>Оплата получена!</b>\nТариф PRO активирован.", parse_mode='HTML')
         else:
-            await q.answer("Оплата не найдена. Подождите.", show_alert=True)
+            await q.answer("❌ Оплата не найдена! Подождите 1-2 минуты и нажмите снова.", show_alert=True)
 
 # === ТЕКСТОВЫЕ КНОПКИ ===
 async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -210,9 +263,34 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Нажмите /start")
         return
 
+    # --- АДМИНСКИЕ РЕЖИМЫ ---
     if user_id in ADMIN_IDS:
         db.update_user(user_id, tariff='pro', tariff_expiry='2099-12-31T23:59:59')
         u['tariff'] = 'pro'
+
+        if context.user_data.get('awaiting_pro_id'):
+            try:
+                target_id = int(text)
+                db.update_user(target_id, tariff='pro', tariff_expiry='2099-12-31T23:59:59')
+                context.user_data['awaiting_pro_id'] = False
+                await update.message.reply_text(f"✅ Пользователю <code>{target_id}</code> выдан вечный PRO!", parse_mode='HTML')
+            except ValueError:
+                await update.message.reply_text("❌ Ошибка. Введите числовой ID.")
+            return
+
+        if context.user_data.get('awaiting_broadcast'):
+            context.user_data['awaiting_broadcast'] = False
+            users = db.get_all_users()
+            success, fail = 0, 0
+            await update.message.reply_text(f"⏳ Начинаю рассылку для {len(users)} пользователей...")
+            for usr in users:
+                try:
+                    await context.bot.send_message(chat_id=usr['user_id'], text=text, parse_mode='HTML')
+                    success += 1
+                except Exception:
+                    fail += 1
+            await update.message.reply_text(f"✅ <b>Рассылка завершена!</b>\n\nДоставлено: {success}\nЗаблокировали бота: {fail}", parse_mode='HTML')
+            return
 
     if context.user_data.get('awaiting_deposit'):
         try:
@@ -225,7 +303,6 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Введите число.")
         return
 
-    # --- КНОПКА ТРИАЛА ---
     if text == "🎁 Пробный PRO (3 дня)":
         if u['trial_used']:
             await update.message.reply_text("❌ Вы уже использовали пробный период!")
@@ -234,7 +311,6 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         db.update_user(user_id, tariff='pro', tariff_expiry=expiry, trial_used=1)
         await update.message.reply_text("🎉 <b>Пробный PRO активирован на 3 дня!</b>", reply_markup=get_reply_main_menu(user_id, 1), parse_mode='HTML')
 
-    # --- ОСТАЛЬНЫЕ КНОПКИ ---
     elif text == "📊 Сигналы": 
         await top_signals_cmd(update, context)
     elif text == "💎 Тарифы": 
@@ -262,9 +338,10 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("🔒 <b>Доступ ограничен.</b>\n\nЧат трейдеров доступен только для подписчиков тарифа <b>PRO</b>.", parse_mode='HTML')
     elif text == "🆘 Поддержка":
         await update.message.reply_text(f"🆘 <b>Служба поддержки</b>\n\nНапишите нам: {SUPPORT_LINK}", parse_mode='HTML')
+    
     elif text == "👑 Админ-панель" and u['user_id'] in ADMIN_IDS:
-        users = db.get_all_users()
-        await update.message.reply_text(f"👑 <b>Админ-панель</b>\n\nВсего пользователей: {len(users)}", parse_mode='HTML')
+        await send_admin_panel(update, context, mode='main')
+        
     else:
         await update.message.reply_text("Пользуйтесь кнопками меню 👇", reply_markup=get_reply_main_menu(u['user_id'], u.get('trial_used', 0)))
 
