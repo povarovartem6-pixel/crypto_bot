@@ -1,11 +1,16 @@
-import sqlite3, json
+import sqlite3, json, os
+from pathlib import Path
 from datetime import datetime
 from typing import Optional, List, Dict
 
-DB_PATH = 'shiper_signal.db'
+# === ИСПРАВЛЕНИЕ ПУТИ К БАЗЕ ДАННЫХ ===
+# Используем папку /app/data (на BotHost она не стирается при перезапуске)
+DATA_DIR = Path("/app/data")
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+DB_PATH = DATA_DIR / 'shiper_signal.db'
 
 def get_conn():
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+    conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn
 
