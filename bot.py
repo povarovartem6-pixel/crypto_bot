@@ -28,17 +28,22 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         db.update_user(u.id, tariff='pro', tariff_expiry='2099-12-31T23:59:59')
         user['tariff'] = 'pro'
 
-    if not context.user_data.get('onboard_done'):
-        instruction = f"👋 <b>Привет, {u.first_name}!</b>\n\nНажми кнопку ниже, чтобы ознакомиться с инструкцией."
-        await update.message.reply_text(instruction, reply_markup=get_onboarding_kb(), parse_mode='HTML')
-        return
-
+    # Если баланс не введен -> значит, человек новый или не закончил онбординг
     if user['balance_usdt'] == 0:
+        if not context.user_data.get('onboard_done'):
+            instruction = f"👋 <b>Привет, {u.first_name}!</b>\n\nНажми кнопку ниже, чтобы ознакомиться с инструкцией."
+            await update.message.reply_text(instruction, reply_markup=get_onboarding_kb(), parse_mode='HTML')
+            return
+        
         context.user_data['awaiting_deposit'] = True
         await update.message.reply_text("💰 Укажите ваш депозит (например, <code>1000</code>):", parse_mode='HTML')
         return
 
-    await update.message.reply_text("👋 Главное меню:", reply_markup=get_reply_main_menu(u.id))
+    # Если у него уже есть баланс -> сразу в меню
+    await update.message.reply_text(
+        f"👋 С возвращением, {u.first_name}!\nВаш баланс: {user['balance_usdt']:.2f} USDT",
+        reply_markup=get_reply_main_menu(u.id, user.get('trial_used', 0))
+    )
 
 # === СИГНАЛЫ ===
 async def top_signals_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -74,13 +79,17 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.answer()
     user_id = q.from_user.id
     u = db.get_user(user_id)
+    
+    if not u:
+        await q.edit_message_text("Ошибка. Нажмите /start")
+        return
 
     if user_id in ADMIN_IDS:
         db.update_user(user_id, tariff='pro', tariff_expiry='2099-12-31T23:59:59')
         u['tariff'] = 'pro'
 
     if q.data == 'main_menu':
-        await q.message.reply_text("👋 Главное меню:", reply_markup=get_reply_main_menu(user_id))
+        await q.message.reply_text("👋 Главное меню:", reply_markup=get_reply_main_menu(user_id, u.get('trial_used', 0)))
         return
     elif q.data == 'onboard_read':
         await q.edit_message_text(LEGAL_DISCLAIMER, reply_markup=get_legal_kb(), parse_mode='HTML')
@@ -110,11 +119,8 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.close()
         if sig_row:
             sig = {
-                'id': sig_id, 
-                'coin': sig_row['coin'], 
-                'signal_type': sig_row['signal_type'], 
-                'entry_price': sig_row['entry_price'], 
-                'stop_loss': sig_row['stop_loss'], 
+                'id': sig_id, 'coin': sig_row['coin'], 'signal_type': sig_row['signal_type'], 
+                'entry_price': sig_row['entry_price'], 'stop_loss': sig_row['stop_loss'], 
                 'target_prices': json.loads(sig_row['target_prices'])
             }
             paper.auto_open(user_id, sig)
@@ -123,33 +129,18 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif q.data.startswith('skip_'):
         await q.edit_message_text(f"❌ <b>Сигнал ПРОПУЩЕН.</b>", parse_mode='HTML')
 
-    # === ОБУЧЕНИЕ ===
     elif q.data == 'lessons_menu':
-        await q.edit_message_text(
-            "🎓 <b>База знаний ShiperSignal</b>\n\nВыберите уровень обучения:",
-            reply_markup=get_lessons_levels_kb(),
-            parse_mode='HTML'
-        )
-        
+        await q.edit_message_text("🎓 <b>База знаний ShiperSignal</b>\n\nВыберите уровень обучения:", reply_markup=get_lessons_levels_kb(), parse_mode='HTML')
     elif q.data.startswith('level_'):
         level_prefix = q.data.replace('level_', '')
         done = json.loads(u.get('lessons_done', '[]'))
-        await q.edit_message_text(
-            f"🎓 <b>Уроки уровня {level_prefix[-1]}</b>",
-            reply_markup=get_level_lessons_kb(level_prefix, done),
-            parse_mode='HTML'
-        )
-        
+        await q.edit_message_text(f"🎓 <b>Уроки уровня {level_prefix[-1]}</b>", reply_markup=get_level_lessons_kb(level_prefix, done), parse_mode='HTML')
     elif q.data.startswith('lesson_'):
         key = q.data.split('_', 1)[1] 
         if key in LESSONS:
             db.mark_lesson_done(user_id, key)
             level_prefix = key.split('_')[0]
-            await q.edit_message_text(
-                LESSONS[key]['text'], 
-                reply_markup=get_lesson_back_kb(level_prefix), 
-                parse_mode='HTML'
-            )
+            await q.edit_message_text(LESSONS[key]['text'], reply_markup=get_lesson_back_kb(level_prefix), parse_mode='HTML')
 
     elif q.data == 'trade_history':
         trades = db.get_closed_trades(user_id, 5)
@@ -188,6 +179,10 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     u = db.get_user(user_id)
 
+    if not u:
+        await update.message.reply_text("Нажмите /start")
+        return
+
     if user_id in ADMIN_IDS:
         db.update_user(user_id, tariff='pro', tariff_expiry='2099-12-31T23:59:59')
         u['tariff'] = 'pro'
@@ -197,68 +192,54 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             amount = float(text.replace(',', '.'))
             db.update_user(user_id, balance_usdt=amount)
             context.user_data['awaiting_deposit'] = False
-            await update.message.reply_text(f"✅ Баланс: <b>{amount:.2f} USDT</b>.", reply_markup=get_reply_main_menu(user_id), parse_mode='HTML')
+            u = db.get_user(user_id) # обновляем данные
+            await update.message.reply_text(f"✅ Баланс: <b>{amount:.2f} USDT</b>.", reply_markup=get_reply_main_menu(user_id, u.get('trial_used', 0)), parse_mode='HTML')
         except ValueError:
             await update.message.reply_text("❌ Введите число.")
         return
 
-    # ЖЕСТКАЯ ПРОВЕРКА ТЕКСТА КНОПОК
-    if text == "📊 Сигналы": 
+    # --- КНОПКА ТРИАЛА ---
+    if text == "🎁 Пробный PRO (3 дня)":
+        if u['trial_used']:
+            await update.message.reply_text("❌ Вы уже использовали пробный период!")
+            return
+        expiry = (datetime.now() + timedelta(days=3)).isoformat()
+        db.update_user(user_id, tariff='pro', tariff_expiry=expiry, trial_used=1)
+        await update.message.reply_text("🎉 <b>Пробный PRO активирован на 3 дня!</b>", reply_markup=get_reply_main_menu(user_id, 1), parse_mode='HTML')
+
+    # --- ОСТАЛЬНЫЕ КНОПКИ ---
+    elif text == "📊 Сигналы": 
         await top_signals_cmd(update, context)
     elif text == "💎 Тарифы": 
         await update.message.reply_text("💎 <b>Тарифы</b>\n\nPRO - $30/мес", reply_markup=tariffs_kb(), parse_mode='HTML')
-        
     elif text == "🎓 Обучение": 
-        await update.message.reply_text(
-            "🎓 <b>База знаний ShiperSignal</b>\n\nВыберите уровень обучения:", 
-            reply_markup=get_lessons_levels_kb(), 
-            parse_mode='HTML'
-        )
-        
+        await update.message.reply_text("🎓 <b>База знаний ShiperSignal</b>\n\nВыберите уровень обучения:", reply_markup=get_lessons_levels_kb(), parse_mode='HTML')
     elif text == "👤 Профиль":
         kb = get_profile_kb()
-        if u['tariff'] == 'free' and not u['trial_used']:
-            kb.inline_keyboard.insert(0, [InlineKeyboardButton("🎁 Пробный PRO (3 дня)", callback_data='activate_trial')])
-            
         await update.message.reply_text(
             f"👤 <b>Профиль</b>\n\nID: <code>{u['user_id']}</code>\nТариф: <b>{u['tariff'].upper()}</b>\nБиржа: {u.get('exchange', 'binance').capitalize()}\nБаланс: {u.get('balance_usdt', 0):.2f} USDT",
             reply_markup=kb, parse_mode='HTML')
-            
     elif text == "💼 Мой профит":
         trades = db.get_closed_trades(u['user_id'], 100)
         pnl = sum(t['realized_pnl'] for t in trades)
         wins = sum(1 for t in trades if t['realized_pnl'] > 0)
         total = len(trades)
         winrate = (wins / total * 100) if total > 0 else 0
-        
         await update.message.reply_text(
             f"💼 <b>Статистика</b>\n\nБаланс: <b>{u.get('balance_usdt', 1000):.2f} USDT</b>\nPnL: <b>{pnl:+.2f} USDT</b>\nСделок: {total} | Винрейт: <b>{winrate:.1f}%</b>",
             parse_mode='HTML')
-            
     elif text == "💬 Чат трейдеров":
         if u['tariff'] in ['pro', 'vip']:
-            await update.message.reply_text(
-                "💬 <b>Закрытый чат трейдеров</b>\n\n"
-                "Ваш доступ подтвержден. Мы сейчас завершаем настройку безопасности и наполнение клуба.\n\n"
-                "🚀 Как только чат будет готов, вы получите персональное приглашение прямо в этот бот.",
-                parse_mode='HTML'
-            )
+            await update.message.reply_text("💬 <b>Закрытый чат трейдеров</b>\n\nВаш доступ подтвержден. Мы сейчас завершаем настройку безопасности и наполнение клуба.\n\n🚀 Как только чат будет готов, вы получите персональное приглашение.", parse_mode='HTML')
         else:
-            await update.message.reply_text(
-                "🔒 <b>Доступ ограничен.</b>\n\n"
-                "Чат трейдеров доступен только для подписчиков тарифа <b>PRO</b>.\n\n"
-                "Оформите подписку в разделе «💎 Тарифы», чтобы получить доступ к закрытому сообществу.",
-                parse_mode='HTML'
-            )
-            
+            await update.message.reply_text("🔒 <b>Доступ ограничен.</b>\n\nЧат трейдеров доступен только для подписчиков тарифа <b>PRO</b>.", parse_mode='HTML')
     elif text == "🆘 Поддержка":
         await update.message.reply_text(f"🆘 <b>Служба поддержки</b>\n\nНапишите нам: {SUPPORT_LINK}", parse_mode='HTML')
-        
     elif text == "👑 Админ-панель" and u['user_id'] in ADMIN_IDS:
         users = db.get_all_users()
         await update.message.reply_text(f"👑 <b>Админ-панель</b>\n\nВсего пользователей: {len(users)}", parse_mode='HTML')
     else:
-        await update.message.reply_text("Пользуйтесь кнопками меню 👇", reply_markup=get_reply_main_menu(u['user_id']))
+        await update.message.reply_text("Пользуйтесь кнопками меню 👇", reply_markup=get_reply_main_menu(u['user_id'], u.get('trial_used', 0)))
 
 # === ЗАПУСК ===
 async def post_init(app: Application):
