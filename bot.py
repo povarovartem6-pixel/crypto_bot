@@ -10,6 +10,8 @@ from keyboards import *
 from tracker import TradeTracker, PaperTrader
 from chart_generator import generate_signal_chart
 from payments import CryptoBotPayment
+from whale_tracker import WhaleTracker
+import requests
 
 logging.basicConfig(format='%(asctime)s %(levelname)s %(message)s', level=logging.INFO)
 db = Database()
@@ -17,6 +19,7 @@ sig_gen = SignalGenerator(db)
 tracker = TradeTracker(db)
 paper = PaperTrader(db)
 payment = CryptoBotPayment()
+whale = WhaleTracker(db)
 
 # === СТАРТ ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -71,7 +74,7 @@ async def top_signals_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text(text, reply_markup=kb, parse_mode='HTML')
 
-# === АДМИН-ПАНЕЛЬ ЛОГИКА ===
+# === АДМИН-ПАНЕЛЬ ===
 async def send_admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE, mode='main'):
     users = db.get_all_users()
     
@@ -263,7 +266,6 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Нажмите /start")
         return
 
-    # --- АДМИНСКИЕ РЕЖИМЫ ---
     if user_id in ADMIN_IDS:
         db.update_user(user_id, tariff='pro', tariff_expiry='2099-12-31T23:59:59')
         u['tariff'] = 'pro'
@@ -345,9 +347,42 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("Пользуйтесь кнопками меню 👇", reply_markup=get_reply_main_menu(u['user_id'], u.get('trial_used', 0)))
 
+# === УТРЕННИЙ ДАЙДЖЕСТ ===
+async def morning_digest_job(app):
+    while True:
+        now = datetime.now()
+        # Если сейчас 09:00 утра
+        if now.hour == 9 and now.minute == 0:
+            users = db.get_all_users()
+            try:
+                btc = whale.exchange.fetch_ticker('BTC/USDT')
+                fg = requests.get('https://api.alternative.me/fng/').json()['data'][0]
+                
+                msg = f"""🌅 <b>Доброе утро!</b>
+Ваша сводка рынка на {now.strftime('%d.%m.%Y')}:
+
+🟠 <b>BTC:</b> ${btc['last']:,.0f} ({btc['percentage']:+.2f}%)
+😱 <b>Fear & Greed:</b> {fg['value']} ({fg['value_classification']})
+
+Желаем удачного торгового дня! 🚀"""
+                
+                for u in users:
+                    try:
+                        await app.bot.send_message(u['user_id'], msg, parse_mode='HTML')
+                    except Exception:
+                        pass
+            except Exception as e:
+                logging.error(f"Digest error: {e}")
+            
+            await asyncio.sleep(86400) # Ждем сутки
+        else:
+            await asyncio.sleep(60) # Проверяем каждую минуту
+
 # === ЗАПУСК ===
 async def post_init(app: Application):
     asyncio.create_task(tracker.monitor(app.bot))
+    asyncio.create_task(whale.monitor(app.bot))
+    asyncio.create_task(morning_digest_job(app))
 
 def main():
     app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
