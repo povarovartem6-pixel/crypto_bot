@@ -8,7 +8,7 @@ CRYPTOBOT_API_TOKEN = os.getenv('CRYPTOBOT_API_TOKEN')
 ADMIN_IDS = [int(x) for x in os.getenv('ADMIN_IDS', '').split(',') if x.strip()]
 
 SUPPORT_LINK = "https://t.me/shipersupportbot"
-CHAT_LINK = "https://t.me/your_chat"  # Ссылка на чат (пока не используется)
+CHAT_LINK = "https://t.me/your_chat" 
 
 TARIFFS = {
     'free':  {'name': 'Free',  'price': 0,  'coins_limit': 2,   'timeframes': ['15м', '1ч'], 'signals_per_day': 3},
