@@ -8,7 +8,6 @@ def get_reply_main_menu(user_id=None, trial_used=1):
         [KeyboardButton("👤 Профиль"), KeyboardButton("💬 Чат трейдеров")],
         [KeyboardButton("🆘 Поддержка")],
     ]
-    # Добавляем кнопку триала, если он еще не использован
     if trial_used == 0:
         kb.insert(0, [KeyboardButton("🎁 Пробный PRO (3 дня)")])
         
@@ -83,4 +82,13 @@ def get_level_lessons_kb(level_prefix, user_lessons_done: list):
 def get_lesson_back_kb(level_prefix):
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🔙 Назад к урокам", callback_data=f'level_{level_prefix}')]
+    ])
+
+# === АДМИН-ПАНЕЛЬ ===
+def get_admin_kb():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("👥 Последние 50 юзеров", callback_data='admin_last_50')],
+        [InlineKeyboardButton("💎 Только оплатившие", callback_data='admin_only_paid')],
+        [InlineKeyboardButton("🎁 Выдать PRO по ID", callback_data='admin_give_pro')],
+        [InlineKeyboardButton("📢 Сделать рассылку", callback_data='admin_broadcast')],
     ])
