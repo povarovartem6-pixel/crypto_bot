@@ -1,5 +1,8 @@
-import ccxt, asyncio
+import ccxt, asyncio, logging
+from datetime import datetime
 from database import get_conn
+
+logger = logging.getLogger(__name__)
 
 class PaperTrader:
     def __init__(self, db): self.db = db
@@ -7,9 +10,15 @@ class PaperTrader:
         user = self.db.get_user(user_id)
         if not user: return
         balance = user.get('balance_usdt', 1000.0)
-        risk_usdt = balance * 0.01
+        
+        if signal['confidence'] >= 80: risk_pct = 0.02
+        elif signal['confidence'] >= 60: risk_pct = 0.01
+        else: risk_pct = 0.005
+        
+        risk_usdt = balance * risk_pct
         risk_per_unit = abs(signal['entry_price'] - signal['stop_loss'])
         size = risk_usdt / risk_per_unit if risk_per_unit > 0 else 0
+        
         if size > 0:
             self.db.open_trade(user_id, signal['id'], signal['entry_price'], signal['stop_loss'],
                                signal['target_prices'][0], signal['target_prices'][1],
@@ -19,13 +28,16 @@ class TradeTracker:
     def __init__(self, db):
         self.db = db
         self.exchange = ccxt.binance({'enableRateLimit': True, 'options': {'defaultType': 'future'}})
+        self.notified_tp1 = set()
+        self.notified_tp2 = set()
+        self.stuck_warned = set()
+        self.trade_open_time = {}
 
     def current_price(self, symbol):
         try: return float(self.exchange.fetch_ticker(symbol)['last'])
-        except: return None
+        except Exception: return None
 
     async def monitor(self, bot):
-        notified_tp1, notified_tp2 = set(), set()
         while True:
             try:
                 trades = self.db.get_open_trades()
@@ -42,28 +54,44 @@ class TradeTracker:
                     entry, sl, tp1, tp2 = t['entry_price'], t['stop_loss'], t['tp1'], t['tp2']
                     trade_id = t['id']
 
+                    if trade_id not in self.trade_open_time:
+                        self.trade_open_time[trade_id] = datetime.now()
+                    time_in_trade = (datetime.now() - self.trade_open_time[trade_id]).total_seconds() / 60
+                    price_change = abs(price - entry) / entry * 100
+                    
+                    if time_in_trade > 120 and price_change < 0.3 and trade_id not in self.stuck_warned:
+                        self.stuck_warned.add(trade_id)
+                        try:
+                            await bot.send_message(t['user_id'], f"😴 <b>Сделка по {coin} стоит на месте 2 часа</b>\n\nМожно закрыть вручную, чтобы освободить средства, или подождать импульса.", parse_mode='HTML')
+                        except: pass
+
                     if side == 'BUY':
                         hit_sl, hit_tp1, hit_tp2 = price <= sl, price >= tp1, price >= tp2
                     else:
                         hit_sl, hit_tp1, hit_tp2 = price >= sl, price <= tp1, price <= tp2
 
                     if hit_sl:
-                        pnl = (price - entry) / entry * t['size'] if side == 'BUY' else (entry - price) / entry * t['size']
-                        self.db.close_trade(trade_id, price, pnl, 'SL hit')
-                        try: await bot.send_message(t['user_id'], f"🛑 <b>Стоп-лосс</b>\n{coin} | Убыток: {pnl:.2f} USDT", parse_mode='HTML')
+                        self.db.close_trade(trade_id, price, 0, 'Стоп-лосс')
+                        try: await bot.send_message(t['user_id'], f"🛑 <b>Стоп-лосс сработал по {coin}</b>\n\nСделка закрыта.", parse_mode='HTML')
                         except: pass
-                    elif hit_tp2 and trade_id not in notified_tp2:
-                        pnl = abs(tp2 - entry) / entry * t['size']
-                        self.db.close_trade(trade_id, tp2, pnl, 'TP2 hit')
-                        notified_tp2.add(trade_id)
-                        try: await bot.send_message(t['user_id'], f"🏆 <b>Цель TP2!</b>\n{coin} | Прибыль: +{pnl:.2f} USDT", parse_mode='HTML')
+                        continue
+
+                    if hit_tp2 and trade_id not in self.notified_tp2:
+                        self.db.close_trade(trade_id, tp2, 0, 'Цель TP2 достигнута')
+                        self.notified_tp2.add(trade_id)
+                        try: await bot.send_message(t['user_id'], f"🏆 <b>Цель TP2 достигнута по {coin}!</b>\n\nСделка полностью закрыта.", parse_mode='HTML')
                         except: pass
-                    elif hit_tp1 and trade_id not in notified_tp1:
-                        notified_tp1.add(trade_id)
-                        try: await bot.send_message(t['user_id'], f"🎯 <b>Цель TP1!</b>\n{coin}\nЗакройте 50% и переведите стоп в БУ.", parse_mode='HTML')
+
+                    elif hit_tp1 and trade_id not in self.notified_tp1:
+                        self.notified_tp1.add(trade_id)
+                        try: await bot.send_message(t['user_id'], f"🎯 <b>Цель TP1 достигнута по {coin}!</b>\n\n1. Закройте 50% позиции.\n2. Переведите стоп в безубыток.", parse_mode='HTML')
                         except: pass
+                        
                         conn = get_conn()
                         conn.execute('UPDATE trades SET stop_loss=? WHERE id=?', (entry, trade_id))
                         conn.commit(); conn.close()
+
                 await asyncio.sleep(30)
-            except Exception: await asyncio.sleep(30)
+            except Exception as e:
+                logger.error(f"Tracker error: {e}")
+                await asyncio.sleep(30)
