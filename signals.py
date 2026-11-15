@@ -1,7 +1,8 @@
 import ccxt
 import numpy as np
 from datetime import datetime
-from config import TAKER_FEE, SLIPPAGE, MIN_RR, MIN_EDGE, FUTURES_CONFIG
+import random
+from config import FUTURES_CONFIG
 from indicators import AdvancedIndicators
 
 TF_MAP = {'5м':'5m','15м':'15m','30м':'30m','1ч':'1h','4ч':'4h','1д':'1d'}
@@ -55,6 +56,7 @@ class SignalGenerator:
 
     def scan(self, coins, timeframe):
         out = []
+        random.shuffle(coins) 
         for c in coins:
             try:
                 s = self.analyze(c, timeframe)
@@ -63,17 +65,27 @@ class SignalGenerator:
         out.sort(key=lambda x: x['confidence'], reverse=True)
         return out
 
-    def format(self, s, user_balance=1000, exchange_name='binance'):
+    def format(self, s, user_balance=1000):
         icon = '🟢📈' if s['signal_type'] == 'BUY' else '🔴📉'
         action = 'ЛОНГ' if s['signal_type'] == 'BUY' else 'ШОРТ'
         
-        atr_pct = s.get('atr_pct', 1.0)
-        rec_lev = self.calculate_leverage(atr_pct)
-        
-        risk_usdt = user_balance * FUTURES_CONFIG['risk_per_trade']
-        risk_pct = abs(s['entry_price'] - s['stop_loss']) / s['entry_price']
-        rec_size = (risk_usdt / (risk_pct * rec_lev)) if risk_pct > 0 else 0
+        confidence = s['confidence']
+        if confidence >= 80:
+            risk_pct = 0.02  
+            risk_label = "Высокая"
+        elif confidence >= 60:
+            risk_pct = 0.01  
+            risk_label = "Средняя"
+        else:
+            risk_pct = 0.005 
+            risk_label = "Низкая"
 
+        risk_usdt = user_balance * risk_pct
+        sl_distance = abs(s['entry_price'] - s['stop_loss']) / s['entry_price']
+        
+        rec_size = (risk_usdt / sl_distance) if sl_distance > 0 else 0
+        rec_lev = self.calculate_leverage(s.get('atr_pct', 1.0))
+        
         min_lev = max(1, rec_lev - 1)
         max_lev = min(10, rec_lev + 1)
 
@@ -82,13 +94,14 @@ class SignalGenerator:
 ━━━━━━━━━━━━━━━━━━━━
 🎯 <b>Сделка:</b> {action}
 ⏱ <b>ТФ:</b> {s['timeframe']} | R:R 1:{s['risk_reward']:.1f}
-📊 <b>Уверенность:</b> {s['confidence']:.0f}%
+📊 <b>Уверенность:</b> {confidence:.0f}% ({risk_label})
 
 <blockquote>💰 <b>Вход:</b> ${s['entry_price']:.5g}
 🛑 <b>Стоп:</b> ${s['stop_loss']:.5g}
 🎯 <b>TP1:</b> ${s['target_prices'][0]:.5g}</blockquote>
 
 ⚙️ <b>Рекомендации:</b>
-Плечо: <b>{min_lev}x - {max_lev}x</b> (оптимально {rec_lev}x)
-Размер: <b>${rec_size:.2f}</b>
+Плечо: <b>{min_lev}x - {max_lev}x</b>
+Позиция: <b>${rec_size:.2f}</b>
+⚠️ <i>Убыток при стопе: ${risk_usdt:.2f}</i>
 """
