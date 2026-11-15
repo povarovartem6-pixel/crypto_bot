@@ -4,7 +4,6 @@ from datetime import datetime
 from typing import Optional, List, Dict
 
 # === ИСПРАВЛЕНИЕ ПУТИ К БАЗЕ ДАННЫХ ===
-# Используем папку /app/data (на BotHost она не стирается при перезапуске)
 DATA_DIR = Path("/app/data")
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 DB_PATH = DATA_DIR / 'shiper_signal.db'
@@ -31,7 +30,8 @@ def init_db():
     CREATE TABLE IF NOT EXISTS trades (
         id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, signal_id INTEGER,
         entry_price REAL, stop_loss REAL, tp1 REAL, tp2 REAL, tp3 REAL, size REAL,
-        status TEXT DEFAULT 'open', realized_pnl REAL DEFAULT 0, opened_at TEXT, closed_at TEXT
+        status TEXT DEFAULT 'open', realized_pnl REAL DEFAULT 0, opened_at TEXT, closed_at TEXT,
+        notes TEXT
     );
     CREATE TABLE IF NOT EXISTS paid_invoices (
         invoice_id TEXT PRIMARY KEY, user_id INTEGER, tariff TEXT, paid_at TEXT
