@@ -10,8 +10,8 @@ from keyboards import *
 from tracker import TradeTracker, PaperTrader
 from chart_generator import generate_signal_chart
 from payments import CryptoBotPayment
-from whale_tracker import WhaleTracker
 import requests
+import ccxt
 
 logging.basicConfig(format='%(asctime)s %(levelname)s %(message)s', level=logging.INFO)
 db = Database()
@@ -19,7 +19,7 @@ sig_gen = SignalGenerator(db)
 tracker = TradeTracker(db)
 paper = PaperTrader(db)
 payment = CryptoBotPayment()
-whale = WhaleTracker(db)
+exchange = ccxt.binance()
 
 # === СТАРТ ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -30,6 +30,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if u.id in ADMIN_IDS:
         db.update_user(u.id, tariff='pro', tariff_expiry='2099-12-31T23:59:59')
         user['tariff'] = 'pro'
+    else:
+        if user['tariff'] in ['pro', 'pro_week', 'pro_month'] and user['tariff_expiry']:
+            if datetime.fromisoformat(user['tariff_expiry']) < datetime.now():
+                db.update_user(u.id, tariff='free')
+                user['tariff'] = 'free'
 
     if user['balance_usdt'] == 0:
         if not context.user_data.get('onboard_done'):
@@ -38,11 +43,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         
         context.user_data['awaiting_deposit'] = True
-        await update.message.reply_text("💰 Укажите ваш депозит (например, <code>1000</code>):", parse_mode='HTML')
+        await update.message.reply_text("💰 Укажите ваш депозит для расчета рисков (например, <code>1000</code>):", parse_mode='HTML')
         return
 
     await update.message.reply_text(
-        f"👋 С возвращением, {u.first_name}!\nВаш баланс: {user['balance_usdt']:.2f} USDT",
+        f"👋 С возвращением, {u.first_name}!\nВаш депозит: {user['balance_usdt']:.2f} USDT",
         reply_markup=get_reply_main_menu(u.id, user.get('trial_used', 0))
     )
 
@@ -51,28 +56,54 @@ async def top_signals_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u = db.get_user(update.effective_user.id)
     
     if u['tariff'] == 'free' and context.user_data.get('signals_today', 0) >= 3:
-        await update.message.reply_text("🛑 <b>Лимит (3/3) исчерпан.</b>", parse_mode='HTML')
+        await update.message.reply_text("🛑 <b>Лимит бесплатных сигналов (3/3) исчерпан.</b>\n\nОформите PRO, чтобы торговать без ограничений по всем 80+ монетам!", reply_markup=tariffs_kb(), parse_mode='HTML')
         return
 
-    coins = ['BTC', 'ETH'] if u['tariff'] == 'free' else ALL_COINS[:10]
+    coins = ['BTC', 'ETH'] if u['tariff'] == 'free' else ALL_COINS[:30]
     await update.message.reply_text("⏳ Сканирую рынок...")
     sigs = sig_gen.scan(coins, '15м')
     
     if not sigs:
-        await update.message.reply_text("😴 Нет сетапов.")
+        text = "😴 <b>Сейчас нет идеальных сетапов. Рынок спит.</b>"
+        if u['tariff'] == 'free':
+            text += "\n\n💎 <i>В PRO-версии бот сканирует 80+ монет и находит сигналы даже во флэте.</i>"
+        await update.message.reply_text(text, reply_markup=tariffs_kb() if u['tariff'] == 'free' else None, parse_mode='HTML')
         return
         
     context.user_data['signals_today'] = context.user_data.get('signals_today', 0) + 1
     
     s = sigs[0]
-    text = sig_gen.format(s, user_balance=u.get('balance_usdt', 1000), exchange_name=u.get('exchange', 'binance'))
-    kb = get_signal_actions_kb(s['id'], s['coin'], u.get('exchange', 'binance'))
+    text = sig_gen.format(s, user_balance=u.get('balance_usdt', 1000))
+    
+    if u['tariff'] == 'free':
+        text += "\n\n⚠️ <i>Вы получаете 3 сигнала в день по BTC/ETH.</i>\n🚀 <b>Оформите PRO</b> для доступа ко всем монетам!"
+        
+    kb = get_signal_actions_kb(s['id'])
     chart = generate_signal_chart(s['coin'], s['signal_type'], s['entry_price'], s['stop_loss'], s['target_prices'][0])
 
     if chart:
         await update.message.reply_photo(photo=chart, caption=text, reply_markup=kb, parse_mode='HTML')
     else:
         await update.message.reply_text(text, reply_markup=kb, parse_mode='HTML')
+
+# === МОИ СДЕЛКИ ===
+async def my_trades_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    u = db.get_user(update.effective_user.id)
+    trades = db.get_open_trades(u['user_id'])
+    
+    if not trades:
+        await update.message.reply_text("У вас нет открытых сделок.")
+        return
+        
+    text = "🟢 <b>Ваши открытые сделки:</b>\n\n"
+    for t in trades:
+        conn = get_conn()
+        sig = conn.execute('SELECT coin, signal_type FROM signals WHERE id=?', (t['signal_id'],)).fetchone()
+        conn.close()
+        if sig:
+            text += f"• <b>{sig['coin']}</b> ({sig['signal_type']}) | Вход: ${t['entry_price']:.4g}\n"
+            
+    await update.message.reply_text(text, parse_mode='HTML')
 
 # === АДМИН-ПАНЕЛЬ ===
 async def send_admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE, mode='main'):
@@ -82,14 +113,14 @@ async def send_admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE, m
         filtered_users = users[-50:]
         title = "👥 <b>Последние 50 пользователей</b>"
     elif mode == 'only_paid':
-        filtered_users = [u for u in users if u['tariff'] == 'pro']
+        filtered_users = [u for u in users if u['tariff'] in ['pro', 'pro_week', 'pro_month']]
         title = "💎 <b>Пользователи с подпиской PRO</b>"
     else:
         filtered_users = users
         title = "👑 <b>Админ-панель</b>"
 
     total_users = len(users)
-    pro_users = sum(1 for u in users if u['tariff'] == 'pro')
+    pro_users = sum(1 for u in users if u['tariff'] in ['pro', 'pro_week', 'pro_month'])
     
     header = f"{title}\n\nВсего юзеров: <b>{total_users}</b>\nОплатили (PRO): <b>{pro_users}</b>\n\n"
     
@@ -111,8 +142,8 @@ async def send_admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE, m
         for i, chunk in enumerate(chunks):
             user_list = f"<b>Стр. {i+1} из {len(chunks)}:</b>\n\n"
             for usr in chunk:
-                pay_status = "✅" if usr['tariff'] == 'pro' else "🆓"
-                user_list += f"{pay_status} <code>{usr['user_id']}</code> | Баланс: {usr.get('balance_usdt', 0):.1f} $\n"
+                pay_status = "✅" if usr['tariff'] in ['pro', 'pro_week', 'pro_month'] else "🆓"
+                user_list += f"{pay_status} <code>{usr['user_id']}</code> | Депозит: {usr.get('balance_usdt', 0):.1f} $\n"
             await context.bot.send_message(chat_id=chat_id, text=user_list, parse_mode='HTML')
 
 # === CALLBACKS ===
@@ -130,7 +161,6 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         db.update_user(user_id, tariff='pro', tariff_expiry='2099-12-31T23:59:59')
         u['tariff'] = 'pro'
 
-    # --- АДМИНКА ---
     if q.data == 'admin_last_50':
         await send_admin_panel(update, context, mode='last_50')
         return
@@ -139,11 +169,20 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     elif q.data == 'admin_give_pro':
         context.user_data['awaiting_pro_id'] = True
-        await q.edit_message_text("🎁 <b>Выдача PRO</b>\n\nОтправьте ID пользователя, которому хотите выдать вечный PRO.")
+        await q.edit_message_text("🎁 <b>Выдача PRO</b>\n\nОтправьте ID пользователя:")
+        return
+    elif q.data.startswith('give_pro_'):
+        _, _, days, target_id = q.data.split('_')
+        days = int(days)
+        target_id = int(target_id)
+        
+        expiry = (datetime.now() + timedelta(days=days)).isoformat()
+        db.update_user(target_id, tariff='pro', tariff_expiry=expiry)
+        await q.edit_message_text(f"✅ Пользователю <code>{target_id}</code> выдан PRO на {days} дней!", parse_mode='HTML')
         return
     elif q.data == 'admin_broadcast':
         context.user_data['awaiting_broadcast'] = True
-        await q.edit_message_text("📢 <b>Режим рассылки</b>\n\nОтправьте текст для рассылки всем пользователям.")
+        await q.edit_message_text("📢 <b>Режим рассылки</b>\n\nОтправьте текст для рассылки:")
         return
 
     if q.data == 'main_menu':
@@ -158,9 +197,12 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         exch = q.data.replace('exch_', '')
         db.update_user(user_id, exchange=exch)
         context.user_data['awaiting_deposit'] = True
-        await q.edit_message_text(f"✅ Биржа {exch.capitalize()} сохранена!\n\nУкажите депозит:", parse_mode='HTML')
+        await q.edit_message_text(f"✅ Биржа сохранена!\n\nУкажите ваш депозит (например, 1000):", parse_mode='HTML')
     elif q.data == 'change_exch':
         await q.edit_message_text("🏦 <b>Выберите новую биржу:</b>", reply_markup=get_exchange_kb(), parse_mode='HTML')
+    elif q.data == 'change_deposit':
+        context.user_data['awaiting_deposit'] = True
+        await q.edit_message_text("💰 Введите новую сумму депозита (например, 1000):", parse_mode='HTML')
 
     elif q.data == 'activate_trial':
         if u['trial_used']:
@@ -179,38 +221,26 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             sig = {
                 'id': sig_id, 'coin': sig_row['coin'], 'signal_type': sig_row['signal_type'], 
                 'entry_price': sig_row['entry_price'], 'stop_loss': sig_row['stop_loss'], 
-                'target_prices': json.loads(sig_row['target_prices'])
+                'target_prices': json.loads(sig_row['target_prices']), 'confidence': sig_row['confidence']
             }
             paper.auto_open(user_id, sig)
             
             current_text = q.message.caption or q.message.text
-            current_kb = q.message.reply_markup
-            
-            new_kb = None
-            if current_kb and current_kb.inline_keyboard:
-                new_kb = InlineKeyboardMarkup([[current_kb.inline_keyboard[-1][0]]])
-            
             new_text = current_text + "\n\n✅ <b>Сделка взята в работу</b>"
             
             try:
-                await q.edit_message_caption(caption=new_text, reply_markup=new_kb, parse_mode='HTML')
+                await q.edit_message_caption(caption=new_text, reply_markup=None, parse_mode='HTML')
             except Exception:
-                await q.edit_message_text(text=new_text, reply_markup=new_kb, parse_mode='HTML')
+                await q.edit_message_text(text=new_text, reply_markup=None, parse_mode='HTML')
             
     elif q.data.startswith('skip_'):
         current_text = q.message.caption or q.message.text
-        current_kb = q.message.reply_markup
-        
-        new_kb = None
-        if current_kb and current_kb.inline_keyboard:
-            new_kb = InlineKeyboardMarkup([[current_kb.inline_keyboard[-1][0]]])
-            
         new_text = current_text + "\n\n❌ <b>Сделка пропущена</b>"
         
         try:
-            await q.edit_message_caption(caption=new_text, reply_markup=new_kb, parse_mode='HTML')
+            await q.edit_message_caption(caption=new_text, reply_markup=None, parse_mode='HTML')
         except Exception:
-            await q.edit_message_text(text=new_text, reply_markup=new_kb, parse_mode='HTML')
+            await q.edit_message_text(text=new_text, reply_markup=None, parse_mode='HTML')
 
     elif q.data == 'lessons_menu':
         await q.edit_message_text("🎓 <b>База знаний ShiperSignal</b>\n\nВыберите уровень обучения:", reply_markup=get_lessons_levels_kb(), parse_mode='HTML')
@@ -232,14 +262,14 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         text = "📜 <b>Последние сделки:</b>\n\n"
         for t in trades:
-            emoji = "✅" if t['realized_pnl'] > 0 else "🛑"
-            text += f"{emoji} {t['coin']} ({t['signal_type']}): {t['realized_pnl']:+.2f} USDT\n"
+            text += f"• {t['coin']} ({t['signal_type']}): {t['notes']}\n"
         await q.edit_message_text(text, parse_mode='HTML')
 
-    elif q.data == 'tariff_pro':
-        inv = payment.create_invoice(user_id, 'pro')
+    elif q.data.startswith('tariff_pro'):
+        tariff_key = 'pro_week' if 'week' in q.data else 'pro_month'
+        inv = payment.create_invoice(user_id, tariff_key)
         if inv:
-            await q.edit_message_text(f"💳 <b>Оплата PRO</b>\nСумма: <b>{inv['amount']} USDT</b>", reply_markup=payment_kb(inv['pay_url'], inv['invoice_id']), parse_mode='HTML')
+            await q.edit_message_text(f"💳 <b>Оплата {TARIFFS[tariff_key]['name']}</b>\nСумма: <b>{inv['amount']} USDT</b>", reply_markup=payment_kb(inv['pay_url'], inv['invoice_id']), parse_mode='HTML')
         else:
             await q.edit_message_text("❌ Ошибка создания счета.")
             
@@ -248,15 +278,21 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if db.invoice_already_used(invoice_id):
             await q.answer("Счет уже использован.", show_alert=True)
             return
+        
         if payment.check_invoice(invoice_id, user_id):
             db.mark_invoice_paid(invoice_id, user_id, 'pro')
-            expiry = (datetime.now() + timedelta(days=30)).isoformat()
+            
+            res = requests.get(f"https://pay.crypt.bot/api/getInvoices", headers=payment.headers, params={'invoice_ids': str(invoice_id)}).json()
+            inv = res['result']['items'][0]
+            days = 7 if 'week' in inv['payload'] else 30
+            
+            expiry = (datetime.now() + timedelta(days=days)).isoformat()
             db.update_user(user_id, tariff='pro', tariff_expiry=expiry)
             await q.edit_message_text("🎉 <b>Оплата получена!</b>\nТариф PRO активирован.", parse_mode='HTML')
         else:
             await q.answer("❌ Оплата не найдена! Подождите 1-2 минуты и нажмите снова.", show_alert=True)
 
-# === ТЕКСТОВЫЕ КНОПКИ ===
+# === ТЕКСТ ===
 async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     user_id = update.effective_user.id
@@ -273,25 +309,24 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if context.user_data.get('awaiting_pro_id'):
             try:
                 target_id = int(text)
-                db.update_user(target_id, tariff='pro', tariff_expiry='2099-12-31T23:59:59')
                 context.user_data['awaiting_pro_id'] = False
-                await update.message.reply_text(f"✅ Пользователю <code>{target_id}</code> выдан вечный PRO!", parse_mode='HTML')
+                await update.message.reply_text(f"Выберите срок для <code>{target_id}</code>:", reply_markup=get_admin_give_pro_kb(target_id), parse_mode='HTML')
             except ValueError:
-                await update.message.reply_text("❌ Ошибка. Введите числовой ID.")
+                await update.message.reply_text("❌ Введите числовой ID.")
             return
 
         if context.user_data.get('awaiting_broadcast'):
             context.user_data['awaiting_broadcast'] = False
             users = db.get_all_users()
             success, fail = 0, 0
-            await update.message.reply_text(f"⏳ Начинаю рассылку для {len(users)} пользователей...")
+            await update.message.reply_text(f"⏳ Начинаю рассылку...")
             for usr in users:
                 try:
                     await context.bot.send_message(chat_id=usr['user_id'], text=text, parse_mode='HTML')
                     success += 1
                 except Exception:
                     fail += 1
-            await update.message.reply_text(f"✅ <b>Рассылка завершена!</b>\n\nДоставлено: {success}\nЗаблокировали бота: {fail}", parse_mode='HTML')
+            await update.message.reply_text(f"✅ <b>Рассылка завершена!</b>\nДоставлено: {success}\nНе дошло: {fail}", parse_mode='HTML')
             return
 
     if context.user_data.get('awaiting_deposit'):
@@ -300,7 +335,7 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             db.update_user(user_id, balance_usdt=amount)
             context.user_data['awaiting_deposit'] = False
             u = db.get_user(user_id)
-            await update.message.reply_text(f"✅ Баланс: <b>{amount:.2f} USDT</b>.", reply_markup=get_reply_main_menu(user_id, u.get('trial_used', 0)), parse_mode='HTML')
+            await update.message.reply_text(f"✅ Депозит установлен: <b>{amount:.2f} USDT</b>.", reply_markup=get_reply_main_menu(user_id, u.get('trial_used', 0)), parse_mode='HTML')
         except ValueError:
             await update.message.reply_text("❌ Введите число.")
         return
@@ -315,35 +350,47 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif text == "📊 Сигналы": 
         await top_signals_cmd(update, context)
+    elif text == "🟢 Мои сделки":
+        await my_trades_cmd(update, context)
     elif text == "💎 Тарифы": 
-        await update.message.reply_text("💎 <b>Тарифы</b>\n\nPRO - $30/мес", reply_markup=tariffs_kb(), parse_mode='HTML')
+        await update.message.reply_text("💎 <b>Тарифы</b>\n\nВыберите подходящий:", reply_markup=tariffs_kb(), parse_mode='HTML')
     elif text == "🎓 Обучение": 
-        await update.message.reply_text("🎓 <b>База знаний ShiperSignal</b>\n\nВыберите уровень обучения:", reply_markup=get_lessons_levels_kb(), parse_mode='HTML')
+        await update.message.reply_text("🎓 <b>База знаний:</b>", reply_markup=get_lessons_levels_kb(), parse_mode='HTML')
     elif text == "👤 Профиль":
         kb = get_profile_kb()
         await update.message.reply_text(
-            f"👤 <b>Профиль</b>\n\nID: <code>{u['user_id']}</code>\nТариф: <b>{u['tariff'].upper()}</b>\nБиржа: {u.get('exchange', 'binance').capitalize()}\nБаланс: {u.get('balance_usdt', 0):.2f} USDT",
+            f"👤 <b>Профиль</b>\n\nID: <code>{u['user_id']}</code>\nТариф: <b>{u['tariff'].upper()}</b>\nБиржа: {u.get('exchange', 'binance').capitalize()}\nДепозит: {u.get('balance_usdt', 0):.2f} USDT",
             reply_markup=kb, parse_mode='HTML')
-    elif text == "💼 Мой профит":
-        trades = db.get_closed_trades(u['user_id'], 100)
-        pnl = sum(t['realized_pnl'] for t in trades)
-        wins = sum(1 for t in trades if t['realized_pnl'] > 0)
-        total = len(trades)
-        winrate = (wins / total * 100) if total > 0 else 0
-        await update.message.reply_text(
-            f"💼 <b>Статистика</b>\n\nБаланс: <b>{u.get('balance_usdt', 1000):.2f} USDT</b>\nPnL: <b>{pnl:+.2f} USDT</b>\nСделок: {total} | Винрейт: <b>{winrate:.1f}%</b>",
-            parse_mode='HTML')
     elif text == "💬 Чат трейдеров":
-        if u['tariff'] in ['pro', 'vip']:
-            await update.message.reply_text("💬 <b>Закрытый чат трейдеров</b>\n\nВаш доступ подтвержден. Мы сейчас завершаем настройку безопасности и наполнение клуба.\n\n🚀 Как только чат будет готов, вы получите персональное приглашение.", parse_mode='HTML')
+        if u['tariff'] in ['pro', 'pro_week', 'pro_month']:
+            await update.message.reply_text("💬 <b>Закрытый чат трейдеров</b>\n\nВаш доступ подтвержден. Мы завершаем настройку безопасности.\n\n🚀 Скоро вы получите приглашение.", parse_mode='HTML')
         else:
             await update.message.reply_text("🔒 <b>Доступ ограничен.</b>\n\nЧат трейдеров доступен только для подписчиков тарифа <b>PRO</b>.", parse_mode='HTML')
     elif text == "🆘 Поддержка":
         await update.message.reply_text(f"🆘 <b>Служба поддержки</b>\n\nНапишите нам: {SUPPORT_LINK}", parse_mode='HTML')
-    
+    elif text == "🌅 Дайджест":
+        await update.message.reply_text("⏳ Собираю данные...")
+        try:
+            btc = exchange.fetch_ticker('BTC/USDT')
+            eth = exchange.fetch_ticker('ETH/USDT')
+            fg = requests.get('https://api.alternative.me/fng/').json()['data'][0]
+            
+            tickers = exchange.fetch_tickers(['SOL/USDT', 'BNB/USDT', 'XRP/USDT', 'DOGE/USDT', 'AVAX/USDT'])
+            sorted_tickers = sorted(tickers.values(), key=lambda x: x['percentage'], reverse=True)
+            top_up = ", ".join([f"{t['symbol'].split('/')[0]} (+{t['percentage']:.1f}%)" for t in sorted_tickers[:2]])
+            top_down = ", ".join([f"{t['symbol'].split('/')[0]} ({t['percentage']:.1f}%)" for t in sorted_tickers[-2:]])
+            
+            msg = f"🌅 <b>Дайджест рынка</b>\n\n🟠 BTC: ${btc['last']:,.0f} ({btc['percentage']:+.1f}%)\n🔵 ETH: ${eth['last']:,.0f} ({eth['percentage']:+.1f}%)\n\n😱 <b>Fear & Greed:</b> {fg['value']} ({fg['value_classification']})\n\n🚀 <b>Растут:</b> {top_up}\n📉 <b>Падают:</b> {top_down}"
+            
+            if u['tariff'] == 'free':
+                msg += "\n\n💎 <i>Хотите получать полную картину и все сигналы? Оформите PRO.</i>"
+                
+            await update.message.reply_text(msg, reply_markup=tariffs_kb() if u['tariff'] == 'free' else None, parse_mode='HTML')
+        except Exception:
+            await update.message.reply_text("⚠️ Ошибка получения данных.")
+            
     elif text == "👑 Админ-панель" and u['user_id'] in ADMIN_IDS:
         await send_admin_panel(update, context, mode='main')
-        
     else:
         await update.message.reply_text("Пользуйтесь кнопками меню 👇", reply_markup=get_reply_main_menu(u['user_id'], u.get('trial_used', 0)))
 
@@ -351,37 +398,22 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def morning_digest_job(app):
     while True:
         now = datetime.now()
-        # Если сейчас 09:00 утра
         if now.hour == 9 and now.minute == 0:
             users = db.get_all_users()
             try:
-                btc = whale.exchange.fetch_ticker('BTC/USDT')
+                btc = exchange.fetch_ticker('BTC/USDT')
                 fg = requests.get('https://api.alternative.me/fng/').json()['data'][0]
-                
-                msg = f"""🌅 <b>Доброе утро!</b>
-Ваша сводка рынка на {now.strftime('%d.%m.%Y')}:
-
-🟠 <b>BTC:</b> ${btc['last']:,.0f} ({btc['percentage']:+.2f}%)
-😱 <b>Fear & Greed:</b> {fg['value']} ({fg['value_classification']})
-
-Желаем удачного торгового дня! 🚀"""
-                
+                msg = f"🌅 <b>Доброе утро!</b>\n\n🟠 BTC: ${btc['last']:,.0f}\n😱 F&G: {fg['value']}\n\nУдачного дня!"
                 for u in users:
-                    try:
-                        await app.bot.send_message(u['user_id'], msg, parse_mode='HTML')
-                    except Exception:
-                        pass
-            except Exception as e:
-                logging.error(f"Digest error: {e}")
-            
-            await asyncio.sleep(86400) # Ждем сутки
+                    try: await app.bot.send_message(u['user_id'], msg, parse_mode='HTML')
+                    except: pass
+            except: pass
+            await asyncio.sleep(86400)
         else:
-            await asyncio.sleep(60) # Проверяем каждую минуту
+            await asyncio.sleep(60)
 
-# === ЗАПУСК ===
 async def post_init(app: Application):
     asyncio.create_task(tracker.monitor(app.bot))
-    asyncio.create_task(whale.monitor(app.bot))
     asyncio.create_task(morning_digest_job(app))
 
 def main():
