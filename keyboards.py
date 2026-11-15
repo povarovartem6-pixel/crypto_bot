@@ -3,10 +3,10 @@ from config import ADMIN_IDS, LESSONS
 
 def get_reply_main_menu(user_id=None, trial_used=1):
     kb = [
-        [KeyboardButton("📊 Сигналы"), KeyboardButton("💼 Мой профит")],
-        [KeyboardButton("🎓 Обучение"), KeyboardButton("💎 Тарифы")],
-        [KeyboardButton("👤 Профиль"), KeyboardButton("💬 Чат трейдеров")],
-        [KeyboardButton("🆘 Поддержка")],
+        [KeyboardButton("📊 Сигналы"), KeyboardButton("🟢 Мои сделки")],
+        [KeyboardButton("🌅 Дайджест"), KeyboardButton("🎓 Обучение")],
+        [KeyboardButton("💎 Тарифы"), KeyboardButton("👤 Профиль")],
+        [KeyboardButton("💬 Чат трейдеров"), KeyboardButton("🆘 Поддержка")],
     ]
     if trial_used == 0:
         kb.insert(0, [KeyboardButton("🎁 Пробный PRO (3 дня)")])
@@ -17,15 +17,15 @@ def get_reply_main_menu(user_id=None, trial_used=1):
 
 def get_profile_kb():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🏦 Сменить биржу", callback_data='change_exch')],
-        [InlineKeyboardButton("📜 История сделок", callback_data='trade_history')]
+        [InlineKeyboardButton("💰 Изменить депозит", callback_data='change_deposit')],
+        [InlineKeyboardButton("📜 История сделок", callback_data='trade_history')],
+        [InlineKeyboardButton("🏦 Сменить биржу", callback_data='change_exch')]
     ])
 
-def get_onboarding_kb():
-    return InlineKeyboardMarkup([[InlineKeyboardButton("✅ Я ознакомился", callback_data='onboard_read')]])
-
-def get_legal_kb():
-    return InlineKeyboardMarkup([[InlineKeyboardButton("✅ Я согласен с правилами", callback_data='legal_accept')]])
+def get_signal_actions_kb(signal_id):
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Взять в работу", callback_data=f'take_{signal_id}'), InlineKeyboardButton("❌ Пропустить", callback_data=f'skip_{signal_id}')]
+    ])
 
 def get_exchange_kb():
     return InlineKeyboardMarkup([
@@ -34,20 +34,11 @@ def get_exchange_kb():
         [InlineKeyboardButton("🟣 Bitget", callback_data='exch_bitget'), InlineKeyboardButton("🟢 KuCoin", callback_data='exch_kucoinfutures')],
     ])
 
-def get_signal_actions_kb(signal_id, coin, exchange_name='binance'):
-    urls = {
-        'binance': f"https://www.binance.com/ru/futures/{coin}USDT",
-        'bybit': f"https://www.bybit.com/trade/usdt/{coin}USDT",
-        'okx': f"https://www.okx.com/trade-swap/{coin}-usdt-swap",
-        'bingx': f"https://bingx.com/ru-ru/perpetual/{coin}-USDT/",
-        'bitget': f"https://www.bitget.com/futures/usdt/{coin}USDT",
-        'kucoinfutures': f"https://www.kucoin.com/trade/futures/{coin}USDT",
-    }
-    url = urls.get(exchange_name, urls['binance'])
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ Взять в работу", callback_data=f'take_{signal_id}'), InlineKeyboardButton("❌ Пропустить", callback_data=f'skip_{signal_id}')],
-        [InlineKeyboardButton(f"📈 Открыть на {exchange_name.capitalize()}", url=url)]
-    ])
+def get_onboarding_kb():
+    return InlineKeyboardMarkup([[InlineKeyboardButton("✅ Я ознакомился", callback_data='onboard_read')]])
+
+def get_legal_kb():
+    return InlineKeyboardMarkup([[InlineKeyboardButton("✅ Я согласен с правилами", callback_data='legal_accept')]])
 
 def payment_kb(pay_url, invoice_id):
     return InlineKeyboardMarkup([
@@ -57,7 +48,8 @@ def payment_kb(pay_url, invoice_id):
 
 def tariffs_kb():
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔥 PRO - $30/мес", callback_data='tariff_pro')],
+        [InlineKeyboardButton("🔥 PRO - $10/неделя", callback_data='tariff_pro_week')],
+        [InlineKeyboardButton("💎 PRO - $30/месяц", callback_data='tariff_pro_month')]
     ])
 
 def get_lessons_levels_kb():
@@ -84,11 +76,16 @@ def get_lesson_back_kb(level_prefix):
         [InlineKeyboardButton("🔙 Назад к урокам", callback_data=f'level_{level_prefix}')]
     ])
 
-# === АДМИН-ПАНЕЛЬ ===
 def get_admin_kb():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("👥 Последние 50 юзеров", callback_data='admin_last_50')],
         [InlineKeyboardButton("💎 Только оплатившие", callback_data='admin_only_paid')],
         [InlineKeyboardButton("🎁 Выдать PRO по ID", callback_data='admin_give_pro')],
         [InlineKeyboardButton("📢 Сделать рассылку", callback_data='admin_broadcast')],
+    ])
+
+def get_admin_give_pro_kb(target_id):
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📅 Выдать на 7 дней", callback_data=f'give_pro_7_{target_id}')],
+        [InlineKeyboardButton("📅 Выдать на 30 дней", callback_data=f'give_pro_30_{target_id}')]
     ])
