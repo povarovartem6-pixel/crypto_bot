@@ -2,6 +2,7 @@ from telegram import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, 
 from config import ADMIN_IDS, LESSONS
 
 def get_reply_main_menu(user_id=None, trial_used=1):
+    """Главное меню (нативная клавиатура)"""
     kb = [
         [KeyboardButton("📊 Сигналы"), KeyboardButton("🟢 Мои сделки")],
         [KeyboardButton("🌅 Дайджест"), KeyboardButton("🎓 Обучение")],
@@ -16,6 +17,7 @@ def get_reply_main_menu(user_id=None, trial_used=1):
     return ReplyKeyboardMarkup(kb, resize_keyboard=True, is_persistent=True)
 
 def get_profile_kb():
+    """Кнопки внутри профиля"""
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("💰 Изменить депозит", callback_data='change_deposit')],
         [InlineKeyboardButton("📜 История сделок", callback_data='trade_history')],
@@ -23,11 +25,14 @@ def get_profile_kb():
     ])
 
 def get_signal_actions_kb(signal_id):
+    """Кнопки под сигналом (Взять/Пропустить)"""
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("✅ Взять в работу", callback_data=f'take_{signal_id}'), InlineKeyboardButton("❌ Пропустить", callback_data=f'skip_{signal_id}')]
+        [InlineKeyboardButton("✅ Взять в работу", callback_data=f'take_{signal_id}'), 
+         InlineKeyboardButton("❌ Пропустить", callback_data=f'skip_{signal_id}')]
     ])
 
 def get_exchange_kb():
+    """Выбор биржи"""
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🟡 Binance", callback_data='exch_binance'), InlineKeyboardButton("🟠 Bybit", callback_data='exch_bybit')],
         [InlineKeyboardButton("⚫️ OKX", callback_data='exch_okx'), InlineKeyboardButton("🔵 BingX", callback_data='exch_bingx')],
@@ -47,12 +52,14 @@ def payment_kb(pay_url, invoice_id):
     ])
 
 def tariffs_kb():
+    """Кнопки тарифов (обновленные цены $10 и $30)"""
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🔥 PRO - $10/неделя", callback_data='tariff_pro_week')],
         [InlineKeyboardButton("💎 PRO - $30/месяц", callback_data='tariff_pro_month')]
     ])
 
 def get_lessons_levels_kb():
+    """Уровни обучения"""
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("🟢 Уровень 1: База", callback_data='level_lvl1')],
         [InlineKeyboardButton("🟡 Уровень 2: Индикаторы", callback_data='level_lvl2')],
@@ -61,6 +68,7 @@ def get_lessons_levels_kb():
     ])
 
 def get_level_lessons_kb(level_prefix, user_lessons_done: list):
+    """Уроки внутри уровня с галочками прогресса"""
     kb = []
     for key, lesson in LESSONS.items():
         if key.startswith(level_prefix):
@@ -77,14 +85,17 @@ def get_lesson_back_kb(level_prefix):
     ])
 
 def get_admin_kb():
+    """Админ-панель с новой кнопкой бэктеста"""
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("👥 Последние 50 юзеров", callback_data='admin_last_50')],
         [InlineKeyboardButton("💎 Только оплатившие", callback_data='admin_only_paid')],
         [InlineKeyboardButton("🎁 Выдать PRO по ID", callback_data='admin_give_pro')],
         [InlineKeyboardButton("📢 Сделать рассылку", callback_data='admin_broadcast')],
+        [InlineKeyboardButton("🧪 Запустить Бэктест (BTC)", callback_data='admin_backtest')]
     ])
 
 def get_admin_give_pro_kb(target_id):
+    """Выбор срока выдачи PRO"""
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📅 Выдать на 7 дней", callback_data=f'give_pro_7_{target_id}')],
         [InlineKeyboardButton("📅 Выдать на 30 дней", callback_data=f'give_pro_30_{target_id}')]
