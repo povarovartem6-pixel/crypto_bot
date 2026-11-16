@@ -31,11 +31,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         db.update_user(u.id, tariff='pro', tariff_expiry='2099-12-31T23:59:59')
         user['tariff'] = 'pro'
     else:
+        # Проверка окончания подписки
         if user['tariff'] in ['pro', 'pro_week', 'pro_month'] and user['tariff_expiry']:
             if datetime.fromisoformat(user['tariff_expiry']) < datetime.now():
                 db.update_user(u.id, tariff='free')
                 user['tariff'] = 'free'
 
+    # Если депозит не введен
     if user['balance_usdt'] == 0:
         if not context.user_data.get('onboard_done'):
             instruction = f"👋 <b>Привет, {u.first_name}!</b>\n\nНажми кнопку ниже, чтобы ознакомиться с инструкцией."
@@ -59,14 +61,14 @@ async def top_signals_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🛑 <b>Лимит бесплатных сигналов (3/3) исчерпан.</b>\n\nОформите PRO, чтобы торговать без ограничений по всем 80+ монетам!", reply_markup=tariffs_kb(), parse_mode='HTML')
         return
 
-    coins = ['BTC', 'ETH'] if u['tariff'] == 'free' else ALL_COINS[:30]
-    await update.message.reply_text("⏳ Сканирую рынок...")
+    coins = ['BTC', 'ETH'] if u['tariff'] == 'free' else ALL_COINS
+    await update.message.reply_text("⏳ Сканирую 80+ монет по 3 таймфреймам...")
     sigs = sig_gen.scan(coins, '15м')
     
     if not sigs:
-        text = "😴 <b>Сейчас нет идеальных сетапов. Рынок спит.</b>"
+        text = "😴 <b>Сейчас нет идеальных сетапов (оценка A+).</b>\nМы не даем сигналы, когда рынок шумит."
         if u['tariff'] == 'free':
-            text += "\n\n💎 <i>В PRO-версии бот сканирует 80+ монет и находит сигналы даже во флэте.</i>"
+            text += "\n\n💎 <i>В PRO-версии бот сканирует 80+ монет и находит больше сетапов.</i>"
         await update.message.reply_text(text, reply_markup=tariffs_kb() if u['tariff'] == 'free' else None, parse_mode='HTML')
         return
         
@@ -161,6 +163,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         db.update_user(user_id, tariff='pro', tariff_expiry='2099-12-31T23:59:59')
         u['tariff'] = 'pro'
 
+    # --- АДМИНКА ---
     if q.data == 'admin_last_50':
         await send_admin_panel(update, context, mode='last_50')
         return
@@ -184,7 +187,27 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['awaiting_broadcast'] = True
         await q.edit_message_text("📢 <b>Режим рассылки</b>\n\nОтправьте текст для рассылки:")
         return
+    elif q.data == 'admin_backtest':
+        await q.edit_message_text("🧪 <b>Запускаю бэктест BTC/USDT за последние 1000 свечей...</b>\nЭто займет около 1-2 минут.")
+        
+        from backtester import Backtester
+        bt = Backtester()
+        
+        loop = asyncio.get_event_loop()
+        res = await loop.run_in_executor(None, lambda: bt.run('BTC', '15м', 20))
+        
+        if res:
+            text = f"📊 <b>Результаты бэктеста (BTC/15м)</b>\n\n" \
+                   f"Всего сигналов: {res['total']}\n" \
+                   f"Успешных (TP1): {res['wins']}\n" \
+                   f"Убыточных (Стоп): {res['losses']}\n\n" \
+                   f"🏆 <b>Винрейт: {res['winrate']:.1f}%</b>"
+            await q.edit_message_text(text, parse_mode='HTML')
+        else:
+            await q.edit_message_text("❌ Не удалось собрать данные для бэктеста.")
+        return
 
+    # --- ОСТАЛЬНОЕ ---
     if q.data == 'main_menu':
         await q.message.reply_text("👋 Главное меню:", reply_markup=get_reply_main_menu(user_id, u.get('trial_used', 0)))
         return
@@ -421,7 +444,7 @@ def main():
     app.add_handler(CommandHandler('start', start))
     app.add_handler(CallbackQueryHandler(on_callback))
     app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, on_message))
-    print("ShiperSignal запущен!")
+    print("ShiperSignal (Sniper Edition) запущен!")
     app.run_polling()
 
 if __name__ == '__main__':
